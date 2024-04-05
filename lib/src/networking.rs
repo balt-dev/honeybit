@@ -1,7 +1,9 @@
 //! Module handling the networking side of the server.
-#![allow(clippy::cast_sign_loss, clippy::cast_possible_wrap, clippy::cast_possible_truncation, clippy::wildcard_imports)]
+#![allow(clippy::cast_sign_loss, clippy::cast_possible_wrap, clippy::cast_possible_truncation, clippy::wildcard_imports, async_fn_in_trait)]
 
-use std::io::{Read, Write, self, ErrorKind};
+use async_std::io::{Read, Write, ReadExt, WriteExt};
+
+use std::io::{self, ErrorKind};
 
 use crate::packets::*;
 
@@ -26,108 +28,108 @@ mod sealed {
 pub trait IncomingPacketType : sealed::Sealed {
     #[allow(clippy::missing_errors_doc)]
     /// Dictates how to load this type from a packet.
-    fn load(source: impl Read + Copy) -> io::Result<Self> where Self: Sized;
+    async fn load(source: impl Read + Copy + Unpin) -> io::Result<Self> where Self: Sized;
 }
 
 /// Dictates that this type can be sent in a packet.
 pub trait OutgoingPacketType : sealed::Sealed {
     #[allow(clippy::missing_errors_doc)]
     /// Dictates how to store this type in a packet.
-    fn store(&self, destination: impl Write + Copy) -> io::Result<()>;
+    async fn store(&self, destination: impl Write + Copy + Unpin) -> io::Result<()>;
 }
 
 impl IncomingPacketType for u8 {
-    fn load(mut source: impl Read) -> io::Result<Self> {
+    async fn load(mut source: impl Read + Unpin) -> io::Result<Self> {
         let mut buf = [0];
-        source.read_exact(&mut buf)?;
+        source.read_exact(&mut buf).await?;
         Ok(buf[0])
     }
 }
 
 impl OutgoingPacketType for u8 {
-    fn store(&self, mut destination: impl Write) -> io::Result<()> {
-        destination.write_all(&[*self])
+    async fn store(&self, mut destination: impl Write + Unpin) -> io::Result<()> {
+        destination.write_all(&[*self]).await
     }
 }
 
 impl IncomingPacketType for i8 {
-    fn load(mut source: impl Read) -> io::Result<Self> {
+    async fn load(mut source: impl Read + Unpin) -> io::Result<Self> {
         let mut buf = [0];
-        source.read_exact(&mut buf)?;
+        source.read_exact(&mut buf).await?;
         Ok(buf[0] as i8)
     }
 }
 
 impl OutgoingPacketType for i8 {
-    fn store(&self, mut destination: impl Write) -> io::Result<()> {
-        destination.write_all(&[*self as u8])
+    async fn store(&self, mut destination: impl Write + Unpin) -> io::Result<()> {
+        destination.write_all(&[*self as u8]).await
     }
 }
 
 impl IncomingPacketType for i16 {
-    fn load(mut source: impl Read) -> io::Result<Self> {
+    async fn load(mut source: impl Read + Unpin) -> io::Result<Self> {
         let mut buf = [0, 0];
-        source.read_exact(&mut buf)?;
+        source.read_exact(&mut buf).await?;
         Ok(i16::from_be_bytes(buf))
     }
 }
 
 impl OutgoingPacketType for i16 {
-    fn store(&self, mut destination: impl Write) -> io::Result<()> {
-        destination.write_all(&self.to_be_bytes())
+    async fn store(&self, mut destination: impl Write + Unpin) -> io::Result<()> {
+        destination.write_all(&self.to_be_bytes()).await
     }
 }
 
 impl IncomingPacketType for x8 {
-    fn load(mut source: impl Read) -> io::Result<Self> {
+    async fn load(mut source: impl Read + Unpin) -> io::Result<Self> {
         let mut buf = [0];
-        source.read_exact(&mut buf)?;
+        source.read_exact(&mut buf).await?;
         Ok(x8::from_bits(buf[0] as i8))
     }
 }
 
 impl OutgoingPacketType for x8 {
-    fn store(&self, mut destination: impl Write) -> io::Result<()> {
-        destination.write_all(&[self.to_bits() as u8])
+    async fn store(&self, mut destination: impl Write + Unpin) -> io::Result<()> {
+        destination.write_all(&[self.to_bits() as u8]).await
     }
 }
 
 impl IncomingPacketType for x16 {
-    fn load(mut source: impl Read) -> io::Result<Self> {
+    async fn load(mut source: impl Read + Unpin) -> io::Result<Self> {
         let mut buf = [0, 0];
-        source.read_exact(&mut buf)?;
+        source.read_exact(&mut buf).await?;
         Ok(x16::from_be_bytes(buf))
     }
 }
 
 impl OutgoingPacketType for x16 {
-    fn store(&self, mut destination: impl Write) -> io::Result<()> {
-        destination.write_all(&self.to_be_bytes())
+    async fn store(&self, mut destination: impl Write + Unpin) -> io::Result<()> {
+        destination.write_all(&self.to_be_bytes()).await
     }
 }
 
 impl<T: IncomingPacketType> IncomingPacketType for Position<T> {
-    fn load(source: impl Read + Copy) -> io::Result<Self> {
+    async fn load(source: impl Read + Copy + Unpin) -> io::Result<Self> {
         Ok(Position{
-            x: T::load(source)?,
-            y: T::load(source)?,
-            z: T::load(source)?,
+            x: T::load(source).await?,
+            y: T::load(source).await?,
+            z: T::load(source).await?,
         })
     }
 }
 
 impl<T: OutgoingPacketType> OutgoingPacketType for Position<T> {
-    fn store(&self, destination: impl Write + Copy) -> io::Result<()> {
-        self.x.store(destination)?;
-        self.y.store(destination)?;
-        self.z.store(destination)
+    async fn store(&self, destination: impl Write + Copy + Unpin) -> io::Result<()> {
+        self.x.store(destination).await?;
+        self.y.store(destination).await?;
+        self.z.store(destination).await
     }
 }
 
 impl IncomingPacketType for String {
-    fn load(mut source: impl Read) -> io::Result<Self> {
+    async fn load(mut source: impl Read + Unpin) -> io::Result<Self> {
         let mut buf = [0; 64];
-        source.read_exact(&mut buf)?;
+        source.read_exact(&mut buf).await?;
         buf.is_ascii()
             // SAFETY: We checked that this is valid ASCII above.
             // By using unchecked, we avoid the unwrap, which would
@@ -138,68 +140,68 @@ impl IncomingPacketType for String {
 }
 
 impl OutgoingPacketType for String {
-    fn store(&self, mut destination: impl Write) -> io::Result<()> {
+    async fn store(&self, mut destination: impl Write + Unpin) -> io::Result<()> {
         if !self.is_ascii() {
             return Err(io::Error::from(ErrorKind::InvalidData));
         }
-        destination.write_all(self.as_bytes())
+        destination.write_all(self.as_bytes()).await
     }
 }
 
 
 impl IncomingPacketType for Vec<u8> {
-    fn load(mut source: impl Read + Copy) -> io::Result<Self> {
-        let length = i16::load(source)?;
+    async fn load(mut source: impl Read + Copy + Unpin) -> io::Result<Self> {
+        let length = i16::load(source).await?;
         let mut buf = [0; 1024];
-        source.read_exact(&mut buf)?;
+        source.read_exact(&mut buf).await?;
         Ok(Vec::from(&buf[..length as usize]))
     }
 }
 
 impl OutgoingPacketType for Vec<u8> {
-    fn store(&self, mut destination: impl Write + Copy) -> io::Result<()> {
+    async fn store(&self, mut destination: impl Write + Copy + Unpin) -> io::Result<()> {
         let length = self.len().min(1024) as i16;
-        length.store(destination)?;
+        length.store(destination).await?;
         let length = length as usize;
         let mut buf = [0; 1024];
         buf[..length].copy_from_slice(&self.as_slice()[..length]);
-        destination.write_all(&buf)
+        destination.write_all(&buf).await
     }
 }
 
 impl IncomingPacketType for Incoming {
-    fn load(source: impl Read + Copy) -> io::Result<Self> {
-        let discriminant = u8::load(source)?;
+    async fn load(source: impl Read + Copy + Unpin) -> io::Result<Self> {
+        let discriminant = u8::load(source).await?;
         Ok(match discriminant {
             0x00 => {
                 let ret = Incoming::PlayerIdentification {
-                    version: u8::load(source)?,
-                    username: String::load(source)?,
-                    key: String::load(source)?
+                    version: u8::load(source).await?,
+                    username: String::load(source).await?,
+                    key: String::load(source).await?
                 };
-                let _ = u8::load(source)?;
+                let _ = u8::load(source).await?;
                 ret
             },
             0x05 => {
-                let position = Position::<i16>::load(source)?;
-                let mode = u8::load(source)? != 0;
+                let position = Position::<i16>::load(source).await?;
+                let mode = u8::load(source).await? != 0;
                 Incoming::SetBlock {
                     position,
-                    state: mode.then_some(u8::load(source)?)
+                    state: mode.then_some(u8::load(source).await?)
                 }
             },
             0x08 => {
-                let _ = u8::load(source)?;
+                let _ = u8::load(source).await?;
                 Incoming::SetPosition {
-                    position: Position::<x16>::load(source)?,
-                    yaw: u8::load(source)?,
-                    pitch: u8::load(source)?
+                    position: Position::<x16>::load(source).await?,
+                    yaw: u8::load(source).await?,
+                    pitch: u8::load(source).await?
                 }
             },
             0x0d => {
-                let _ = u8::load(source)?;
+                let _ = u8::load(source).await?;
                 Incoming::Message {
-                    message: String::load(source)?
+                    message: String::load(source).await?
                 }
             }
             _ => return Err(
@@ -210,80 +212,80 @@ impl IncomingPacketType for Incoming {
 }
 
 impl OutgoingPacketType for Outgoing {
-    fn store(&self, destination: impl Write + Copy) -> io::Result<()> {
+    async fn store(&self, destination: impl Write + Copy + Unpin) -> io::Result<()> {
         match self {
             Outgoing::ServerIdentification { version, name, motd, operator } => {
-                0x0u8.store(destination)?;
-                version.store(destination)?;
-                name.store(destination)?;
-                motd.store(destination)?;
-                (if *operator { 0x64u8 } else { 0x00u8 }).store(destination)
+                0x0u8.store(destination).await?;
+                version.store(destination).await?;
+                name.store(destination).await?;
+                motd.store(destination).await?;
+                (if *operator { 0x64u8 } else { 0x00u8 }).store(destination).await
             },
-            Outgoing::Ping => 0x1u8.store(destination),
-            Outgoing::LevelInit => 0x2u8.store(destination),
+            Outgoing::Ping => 0x1u8.store(destination).await,
+            Outgoing::LevelInit => 0x2u8.store(destination).await,
             Outgoing::LevelDataChunk { data_chunk, percent_complete } => {
-                0x3u8.store(destination)?;
-                data_chunk.store(destination)?;
-                percent_complete.store(destination)
+                0x3u8.store(destination).await?;
+                data_chunk.store(destination).await?;
+                percent_complete.store(destination).await
             },
             Outgoing::LevelFinalize { size } => {
-                0x4u8.store(destination)?;
-                size.store(destination)
+                0x4u8.store(destination).await?;
+                size.store(destination).await
             },
             Outgoing::SetBlock { position, block } => {
-                0x6u8.store(destination)?;
-                position.store(destination)?;
-                block.store(destination)
+                0x6u8.store(destination).await?;
+                position.store(destination).await?;
+                block.store(destination).await
             },
             Outgoing::SpawnPlayer { id, name, spawn, yaw, pitch } => {
-                0x7u8.store(destination)?;
-                id.store(destination)?;
-                name.store(destination)?;
-                spawn.store(destination)?;
-                yaw.store(destination)?;
-                pitch.store(destination)
+                0x7u8.store(destination).await?;
+                id.store(destination).await?;
+                name.store(destination).await?;
+                spawn.store(destination).await?;
+                yaw.store(destination).await?;
+                pitch.store(destination).await
             },
             Outgoing::TeleportPlayer { id, position, yaw, pitch } => {
-                0x8u8.store(destination)?;
-                id.store(destination)?;
-                position.store(destination)?;
-                yaw.store(destination)?;
-                pitch.store(destination)
+                0x8u8.store(destination).await?;
+                id.store(destination).await?;
+                position.store(destination).await?;
+                yaw.store(destination).await?;
+                pitch.store(destination).await
             },
             Outgoing::UpdatePlayerLocation { id, position_change, yaw, pitch } => {
-                0x9u8.store(destination)?;
-                id.store(destination)?;
-                position_change.store(destination)?;
-                yaw.store(destination)?;
-                pitch.store(destination)
+                0x9u8.store(destination).await?;
+                id.store(destination).await?;
+                position_change.store(destination).await?;
+                yaw.store(destination).await?;
+                pitch.store(destination).await
             },
             Outgoing::UpdatePlayerPosition { id, position_change } => {
-                0xau8.store(destination)?;
-                id.store(destination)?;
-                position_change.store(destination)
+                0xau8.store(destination).await?;
+                id.store(destination).await?;
+                position_change.store(destination).await
             },
             Outgoing::UpdatePlayerRotation { id, yaw, pitch } => {
-                0xbu8.store(destination)?;
-                id.store(destination)?;
-                yaw.store(destination)?;
-                pitch.store(destination)
+                0xbu8.store(destination).await?;
+                id.store(destination).await?;
+                yaw.store(destination).await?;
+                pitch.store(destination).await
             },
             Outgoing::DespawnPlayer { id } => {
-                0xcu8.store(destination)?;
-                id.store(destination)
+                0xcu8.store(destination).await?;
+                id.store(destination).await
             },
             Outgoing::Message { id, message } => {
-                0xdu8.store(destination)?;
-                id.store(destination)?;
-                message.store(destination)
+                0xdu8.store(destination).await?;
+                id.store(destination).await?;
+                message.store(destination).await
             },
             Outgoing::Disconnect { reason } => {
-                0xeu8.store(destination)?;
-                reason.store(destination)
+                0xeu8.store(destination).await?;
+                reason.store(destination).await
             },
             Outgoing::UpdateUser { operator } => {
-                0xfu8.store(destination)?;
-                (if *operator {0x64} else {0u8}).store(destination)
+                0xfu8.store(destination).await?;
+                (if *operator {0x64} else {0u8}).store(destination).await
             }
         }
     }

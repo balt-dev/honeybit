@@ -8,3 +8,4 @@ edition = "2021"
 [dependencies]
 fixed = "2.0.0-alpha.27.0"
 flate2 = "1"
+async-std = "1.12"
