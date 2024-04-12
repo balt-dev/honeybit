@@ -24,7 +24,7 @@ async fn main() -> ExitCode {
         simplelog::ColorChoice::Auto
     ).expect("no logger has been initialized yet");
 
-    let res: Result<(), Box<dyn Error>> = networking::start().await.map_err(|e| e.into());
+    let res: Result<(), Box<dyn Error>> = networking::start(todo!()).await.map_err(|e| e.into());
     let Err(err) = res else { return ExitCode::SUCCESS; };
     error!("~~~ ENCOUNTERED FATAL ERROR ~~~");
     error!("{err}");

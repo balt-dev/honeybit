@@ -1,7 +1,4 @@
-use std::{
-    sync::{Arc, Mutex},
-};
-use std::net::Ipv4Addr;
+use std::{io::ErrorKind, net::Ipv4Addr, sync::{Arc, Mutex}};
 use tokio::{
     io,
     net::{TcpListener, TcpStream},
@@ -14,8 +11,7 @@ use tokio::time::Instant;
 use oxine::{
     networking::{IncomingPacketType, OutgoingPacketType},
     packets::{Incoming, Outgoing},
-    server::Server,
-    server::Config
+    server::{Config, SaltExt, Server}
 };
 
 /// Starts the networking section of the server.
@@ -24,11 +20,40 @@ pub(crate) async fn start(server: Arc<Mutex<Server>>) -> Result<(), io::Error> {
         let lock = server.lock().expect("other thread panicked");
         lock.config.clone()
     };
-    
+
     let listener = TcpListener::bind((
         Ipv4Addr::new(127, 0, 0, 1),
         config.port
     )).await?;
+    
+    let mut heartbeat_rand = rand::thread_rng();
+
+    let heartbeat_task: JoinHandle<Result<(), io::Error>> = tokio::spawn(async move {
+        let mut fails = 0;
+        let client = reqwest::Client::new();
+        loop {
+            let next_wakeup = Instant::now() + config.heartbeat_spacing;
+            // Generate a new salt
+            let new_salt = heartbeat_rand.salt();
+
+            let req = client.post(config.heartbeat_url)
+                .query(&[
+
+                ]).build().map_err(|err| io::Error::new(
+                    ErrorKind::Other,
+                    err
+                ))?;
+
+            if time::timeout(config.packet_timeout, client.execute(req)).await.is_err() {
+                // Failed to ping heartbeat URL.
+                if fails >= config.heartbeat_retries {
+                    return Err(io::Error::new(ErrorKind::TimedOut, "Failed to connect to heartbeat URL."))
+                }
+
+            }
+            time::sleep_until(next_wakeup).await;
+        }
+    });
 
     loop {
         let connection = listener.accept().await;
@@ -65,14 +90,27 @@ async fn handle_stream(config: Config, server: Arc<Mutex<Server>>, stream: TcpSt
 
     let recv_task = tokio::spawn(async move {
         while let Some(packet) = rx.recv().await {
-            if let Err(e) = time::timeout(config.packet_timeout, packet.store(&mut write)).await {
-                let _ = time::timeout(
-                    config.packet_timeout,
-                    Outgoing::Disconnect {
-                        reason: format!("Connection error: {e}")
-                    }.store(&mut write)
-                ).await;
-                rx.close();
+            let res = time::timeout(config.packet_timeout, packet.store(&mut write)).await;
+            match res {
+                Err(_) => { // Timeout
+                    let _ = time::timeout(
+                        config.packet_timeout,
+                        Outgoing::Disconnect {
+                            reason: format!("Connection timed out")
+                        }.store(&mut write)
+                    ).await;
+                    rx.close();
+                },
+                Ok(Err(err)) => { // Connection error
+                    let _ = time::timeout(
+                        config.packet_timeout,
+                        Outgoing::Disconnect {
+                            reason: format!("Connection error: {err}")
+                        }.store(&mut write)
+                    ).await;
+                    rx.close();
+                },
+                Ok(Ok(_)) => {}
             }
             if let Outgoing::Disconnect { .. } = packet {
                 rx.close();
@@ -109,7 +147,9 @@ async fn handle_stream(config: Config, server: Arc<Mutex<Server>>, stream: TcpSt
                         }).await;
                         break;
                     }
-                    
+                    if config.verify_users {
+
+                    }
                 }
                 Incoming::SetBlock { position, state } => {
 
@@ -138,6 +178,6 @@ async fn handle_stream(config: Config, server: Arc<Mutex<Server>>, stream: TcpSt
         }
     });
 
-    let _ = join!(recv_task, send_task, heartbeat_task);
+    let (recv, send, heart) = join!(recv_task, send_task, heartbeat_task);
 
 }
