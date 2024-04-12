@@ -15,3 +15,6 @@ tokio = {version = "1", features = ["rt-multi-thread", "macros", "net", "time", 
 oxine = {path = "../lib"}
 rand = "0.8"
 reqwest = "0.12"
+md5 = "0.7"
+
+mlua = {version = "0.9", features = ["luajit", "vendored"]}

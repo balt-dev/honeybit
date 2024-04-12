@@ -1,4 +1,5 @@
 use std::{io::ErrorKind, net::Ipv4Addr, sync::{Arc, Mutex}};
+use rand::{rngs::StdRng, SeedableRng};
 use tokio::{
     io,
     net::{TcpListener, TcpStream},
@@ -25,32 +26,42 @@ pub(crate) async fn start(server: Arc<Mutex<Server>>) -> Result<(), io::Error> {
         Ipv4Addr::new(127, 0, 0, 1),
         config.port
     )).await?;
-    
-    let mut heartbeat_rand = rand::thread_rng();
 
+    let hb_config = config.clone();
+    let hb_server = server.clone();
     let heartbeat_task: JoinHandle<Result<(), io::Error>> = tokio::spawn(async move {
+        let config = hb_config;
+        let server = hb_server;
         let mut fails = 0;
+        let mut heartbeat_rand = StdRng::from_entropy();
         let client = reqwest::Client::new();
         loop {
             let next_wakeup = Instant::now() + config.heartbeat_spacing;
             // Generate a new salt
             let new_salt = heartbeat_rand.salt();
+            let req = {
+                let lock = server.lock().expect("other thread panicked");
+                client.post(&config.heartbeat_url)
+                    .query(&[
+                        ("port", config.port),
 
-            let req = client.post(config.heartbeat_url)
-                .query(&[
+                    ]).build().map_err(|err| io::Error::new(
+                        ErrorKind::Other,
+                        err
+                    ))
+            }?;
 
-                ]).build().map_err(|err| io::Error::new(
-                    ErrorKind::Other,
-                    err
-                ))?;
-
-            if time::timeout(config.packet_timeout, client.execute(req)).await.is_err() {
+            while time::timeout(config.packet_timeout, 
+                client.execute(req.try_clone().expect("streams aren't being used here"))
+            ).await.is_err() {
                 // Failed to ping heartbeat URL.
                 if fails >= config.heartbeat_retries {
                     return Err(io::Error::new(ErrorKind::TimedOut, "Failed to connect to heartbeat URL."))
                 }
-
+                fails += 1;
             }
+            fails = 0;
+            
             time::sleep_until(next_wakeup).await;
         }
     });
@@ -71,22 +82,22 @@ pub(crate) async fn start(server: Arc<Mutex<Server>>) -> Result<(), io::Error> {
 
 #[derive(Debug, Clone, PartialEq, Hash)]
 pub struct PlayerState {
-    /// The world the player is in.
-    pub current_world: String,
-    /// The ID of the player.
-    pub id: i8
+    /// The player's username.
+    pub username: String
 }
 
-/// Handle a single connection to the server
+/// Handle a single connection to the server. This is long-running!
 async fn handle_stream(config: Config, server: Arc<Mutex<Server>>, stream: TcpStream) {
     let (tx, mut rx) = mpsc::channel::<Outgoing>(100);
     let htx = tx.clone();
     let (mut read, mut write) = stream.into_split();
     
     let player_state = Arc::new(Mutex::new(PlayerState {
-        current_world: config.default_world.clone(),
-        id: -1
+        username: String::new()
     }));
+
+    let recv_server = server.clone();
+    let send_player = player_state.clone();
 
     let recv_task = tokio::spawn(async move {
         while let Some(packet) = rx.recv().await {
@@ -100,6 +111,7 @@ async fn handle_stream(config: Config, server: Arc<Mutex<Server>>, stream: TcpSt
                         }.store(&mut write)
                     ).await;
                     rx.close();
+                    break;
                 },
                 Ok(Err(err)) => { // Connection error
                     let _ = time::timeout(
@@ -109,6 +121,7 @@ async fn handle_stream(config: Config, server: Arc<Mutex<Server>>, stream: TcpSt
                         }.store(&mut write)
                     ).await;
                     rx.close();
+                    break;
                 },
                 Ok(Ok(_)) => {}
             }
@@ -116,17 +129,16 @@ async fn handle_stream(config: Config, server: Arc<Mutex<Server>>, stream: TcpSt
                 rx.close();
             }
             if rx.is_closed() {
-                let mut server = server.lock().expect("other thread panicked");
-                let player_state = player_state.lock().expect("other thread panicked");
-                if let Some(world) = server.worlds.get_mut(&player_state.current_world) {
-                    world.remove_player(player_state.id);
-                }
+                let mut lock = recv_server.lock().expect("other thread panicked");
+                let state = player_state.lock().expect("other thread panicked");
+                lock.disconnect(&state.username);
             }
         }
     });
-    
+
     let send_task: JoinHandle<()> = tokio::spawn(async move {
-        loop {
+        let player = send_player;
+        while !tx.is_closed() {
             match {
                 let res = Incoming::load(&mut read).await;
                 match res {
@@ -147,12 +159,28 @@ async fn handle_stream(config: Config, server: Arc<Mutex<Server>>, stream: TcpSt
                         }).await;
                         break;
                     }
-                    if config.verify_users {
+                    let server = server.lock().expect("other thread panicked");
+
+                    if server.last_salts.is_empty() || {
+                        let mut res = false;
+                        for salt in server.last_salts.iter() {
+                            let server_key = md5::compute(salt.to_owned() + &username);
+                            if &*server_key == key.as_bytes() {
+                                res = true;
+                                break;
+                            }
+                        }
+                        res
+                    } {
 
                     }
                 }
                 Incoming::SetBlock { position, state } => {
-
+                    /// Get the world that the player is in
+                    let res = {
+                        let player_name = &player.lock().expect("other thread panicked").username;
+                        server.lock().expect("other thread panicked").players_connected.get(player_name)
+                    };
                 }
                 Incoming::SetLocation { location } => {
 
@@ -165,7 +193,7 @@ async fn handle_stream(config: Config, server: Arc<Mutex<Server>>, stream: TcpSt
     });
     
     let heartbeat_task: JoinHandle<()> = tokio::spawn(async move {
-        loop {
+        while !htx.is_closed() {
             let next_wakeup = Instant::now() + config.ping_spacing;
             if time::timeout(config.packet_timeout, htx.send(Outgoing::Ping)).await.is_err() {
                 // Heartbeat timed out, we disconnect
@@ -179,5 +207,8 @@ async fn handle_stream(config: Config, server: Arc<Mutex<Server>>, stream: TcpSt
     });
 
     let (recv, send, heart) = join!(recv_task, send_task, heartbeat_task);
-
+    
+    let _ = recv.inspect_err(|err| error!("Recieving task panicked: {err}"));
+    let _ = send.inspect_err(|err| error!("Sending task panicked: {err}"));
+    let _ = heart.inspect_err(|err| error!("Heartbeat task panicked: {err}"));
 }
