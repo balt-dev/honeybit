@@ -1,20 +1,18 @@
 //! Holds structs for use in sending packets to and from clients.
 
-use fixed::{FixedI16, FixedI8};
+use fixed::{
+    FixedI8, FixedU16,
+    types::extra::U5
+};
+use mint::Vector3;
+use crate::world::Location;
 
 #[allow(non_camel_case_types)]
 /// Type alias for fixed point fractional i8s.
-pub type x8 = FixedI8<5>;
+pub type x8 = FixedI8<U5>;
 #[allow(non_camel_case_types)]
-/// Type alias for fixed point fractional i16s.
-pub type x16 = FixedI16<5>;
-
-/// Convenience struct for a position.
-#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-#[allow(missing_docs)]
-pub struct Position<T> {
-    pub x: T, pub y: T, pub z: T
-}
+/// Type alias for fixed point fractional u16s.
+pub type x16 = FixedU16<U5>;
 
 /// Packets going from the client to the server.
 #[repr(u8)]
@@ -32,19 +30,15 @@ pub enum Incoming {
     /// Sent when a user changes a block.
     SetBlock {
         /// The position of the changed block.
-        position: Position<i16>,
-        /// The block's new state. None represents destroying a block.
-        state: Option<u8>
+        position: Vector3<u16>,
+        /// The block's new state. 0x00 represents destroying a block.
+        state: u8
     } = 0x05,
     /// Sent to update a player's location.
     /// The player ID always refers to the sender, so it is left out.
-    SetPosition {
-        /// The player's position.
-        position: Position<x16>,
-        /// The player's yaw.
-        yaw: u8,
-        /// The player's pitch.
-        pitch: u8
+    SetLocation {
+        /// The player's new position and rotation.
+        location: Location
     } = 0x08,
     /// Sent when a chat message is sent.
     Message {
@@ -82,12 +76,12 @@ pub enum Outgoing {
     /// Sent after level data is done sending, containing map dimensions.
     LevelFinalize {
         /// The size of the map.
-        size: Position<i16>
+        size: Vector3<u16>
     } = 0x04,
     /// Sent after a block change.
     SetBlock {
         /// The position of the changed block.
-        position: Position<i16>,
+        position: Vector3<u16>,
         /// The changed block's type.
         block: u8
     } = 0x06,
@@ -97,30 +91,22 @@ pub enum Outgoing {
         id: i8,
         /// The player's name.
         name: String,
-        /// The player's spawn position.
-        spawn: Position<x16>,
-        /// The player's yaw.
-        yaw: u8,
-        /// The player's pitch.
-        pitch: u8
+        /// The player's spawn position and rotation.
+        location: Location
     } = 0x07,
     /// Sent to teleport a player to a location.
     TeleportPlayer {
         /// The player's ID.
         id: i8,
-        /// The player's position.
-        position: Position<x16>,
-        /// The player's yaw.
-        yaw: u8,
-        /// The player's pitch.
-        pitch: u8
+        /// The player's new position and rotation.
+        location: Location
     } = 0x08,
     /// Sent to update a player's position and rotation.
     UpdatePlayerLocation {
         /// The player's ID.
         id: i8,
         /// The player's change in position.
-        position_change: Position<x8>,
+        position_change: Vector3<x8>,
         /// The player's new yaw.
         yaw: u8,
         /// The player's new pitch.
@@ -131,7 +117,7 @@ pub enum Outgoing {
         /// The player's ID.
         id: i8,
         /// The player's change in position.
-        position_change: Position<x8>
+        position_change: Vector3<x8>
     } = 0x0a,
     /// Sent to update a player's rotation.
     UpdatePlayerRotation {

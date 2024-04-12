@@ -6,6 +6,11 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-fixed = "2.0.0-alpha.27.0"
+fixed = "1"
 flate2 = "1"
-async-std = "1.12"
+tokio = { version = "1", features = ["io-util"]}
+mint = "0.5"
+identity-hash = "0.1"
+arrayvec = "0.7"
+base62 = "2"
+rand = "0.8"
