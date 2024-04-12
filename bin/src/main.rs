@@ -1,6 +1,8 @@
 #![warn(clippy::pedantic, clippy::perf, missing_docs, clippy::missing_docs_in_private_items)]
+#![allow(clippy::too_many_lines)] // fuck off
 
-//! TODO: This binary implementation is temporary. Don't keep it around.
+#![doc = include_str!("../README.md")]
+
 
 mod networking;
 

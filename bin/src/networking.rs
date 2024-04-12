@@ -1,4 +1,6 @@
-use std::{io::ErrorKind, net::Ipv4Addr, sync::{Arc, Mutex}};
+//! Handles general networking, just gluing to the lib
+
+use std::{io::ErrorKind, net::Ipv4Addr, sync::{Arc, Mutex, RwLock, OnceLock}};
 use rand::{rngs::StdRng, SeedableRng};
 use tokio::{
     io,
@@ -16,9 +18,9 @@ use oxine::{
 };
 
 /// Starts the networking section of the server.
-pub(crate) async fn start(server: Arc<Mutex<Server>>) -> Result<(), io::Error> {
+pub(crate) async fn start(server: Arc<RwLock<Server>>) -> Result<(), io::Error> {
     let config = {
-        let lock = server.lock().expect("other thread panicked");
+        let lock = server.read().expect("other thread panicked");
         lock.config.clone()
     };
 
@@ -29,7 +31,9 @@ pub(crate) async fn start(server: Arc<Mutex<Server>>) -> Result<(), io::Error> {
 
     let hb_config = config.clone();
     let hb_server = server.clone();
-    let heartbeat_task: JoinHandle<Result<(), io::Error>> = tokio::spawn(async move {
+
+    // This won't get dropped until the loop below ends
+    let _heartbeat_task: JoinHandle<Result<(), io::Error>> = tokio::spawn(async move {
         let config = hb_config;
         let server = hb_server;
         let mut fails = 0;
@@ -38,14 +42,36 @@ pub(crate) async fn start(server: Arc<Mutex<Server>>) -> Result<(), io::Error> {
         loop {
             let next_wakeup = Instant::now() + config.heartbeat_spacing;
             // Generate a new salt
-            let new_salt = heartbeat_rand.salt();
             let req = {
-                let lock = server.lock().expect("other thread panicked");
+                let (salt, user_count);
+                {
+                    let mut lock = server.write().expect("other thread panicked");
+                    user_count = lock.players_connected.len();
+                    salt = if config.kept_salts == 0 {
+                        String::new()
+                    } else {
+                        let new_salt = heartbeat_rand.salt();
+                        if lock.last_salts.len() < config.kept_salts {
+                            lock.last_salts.push_front(new_salt.clone());
+                            new_salt
+                        } else {
+                            // Shift the old ones to the back and insert the new one, without allocating
+                            let back = lock.last_salts.back_mut().expect("salt list is not empty here");
+                            let _ = std::mem::replace(back, new_salt.clone());
+                            lock.last_salts.rotate_right(1);
+                            new_salt
+                        }
+                    };
+                }
                 client.post(&config.heartbeat_url)
-                    .query(&[
-                        ("port", config.port),
-
-                    ]).build().map_err(|err| io::Error::new(
+                    .query(&[("port", config.port)])
+                    .query(&[("max", config.max_players)])
+                    .query(&[("name", &config.name)])
+                    .query(&[("public", &config.public)])
+                    .query(&[("version", 7)])
+                    .query(&[("salt", salt)])
+                    .query(&[("users", user_count)])
+                    .build().map_err(|err| io::Error::new(
                         ErrorKind::Other,
                         err
                     ))
@@ -80,24 +106,16 @@ pub(crate) async fn start(server: Arc<Mutex<Server>>) -> Result<(), io::Error> {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Hash)]
-pub struct PlayerState {
-    /// The player's username.
-    pub username: String
-}
-
 /// Handle a single connection to the server. This is long-running!
-async fn handle_stream(config: Config, server: Arc<Mutex<Server>>, stream: TcpStream) {
+async fn handle_stream(config: Config, server: Arc<RwLock<Server>>, stream: TcpStream) {
     let (tx, mut rx) = mpsc::channel::<Outgoing>(100);
     let htx = tx.clone();
     let (mut read, mut write) = stream.into_split();
     
-    let player_state = Arc::new(Mutex::new(PlayerState {
-        username: String::new()
-    }));
+    let player_name = Arc::new(OnceLock::new());
 
     let recv_server = server.clone();
-    let send_player = player_state.clone();
+    let recv_name = player_name.clone();
 
     let recv_task = tokio::spawn(async move {
         while let Some(packet) = rx.recv().await {
@@ -107,7 +125,7 @@ async fn handle_stream(config: Config, server: Arc<Mutex<Server>>, stream: TcpSt
                     let _ = time::timeout(
                         config.packet_timeout,
                         Outgoing::Disconnect {
-                            reason: format!("Connection timed out")
+                            reason: "Connection timed out".to_string()
                         }.store(&mut write)
                     ).await;
                     rx.close();
@@ -129,58 +147,69 @@ async fn handle_stream(config: Config, server: Arc<Mutex<Server>>, stream: TcpSt
                 rx.close();
             }
             if rx.is_closed() {
-                let mut lock = recv_server.lock().expect("other thread panicked");
-                let state = player_state.lock().expect("other thread panicked");
-                lock.disconnect(&state.username);
+                if let Some(username) = recv_name.get() {
+                    let mut lock = recv_server.write().expect("other thread panicked");
+                    lock.disconnect(username);
+                }
             }
         }
     });
 
     let send_task: JoinHandle<()> = tokio::spawn(async move {
-        let player = send_player;
         while !tx.is_closed() {
-            match {
-                let res = Incoming::load(&mut read).await;
-                match res {
-                    Ok(packet) => packet,
-                    Err(e) => {
-                        let _ = tx.send(Outgoing::Disconnect {
-                            reason: format!("Connection error: {e}")
-                        }).await;
 
-                        break;
-                    }
+            let res = Incoming::load(&mut read).await;
+            // Using a match instead of .map_err since I need to break
+            let res = match res {
+                Ok(packet) => packet,
+                Err(e) => {
+                    let _ = tx.send(Outgoing::Disconnect {
+                        reason: format!("Connection error: {e}")
+                    }).await;
+
+                    break;
                 }
-            } {
+            };
+            match res {
                 Incoming::PlayerIdentification { version, username, key } => {
                     if version != 0x07 {
                         let _ = tx.send(Outgoing::Disconnect {
-                            reason: format!("Failed to connect: incorrect version 0x{version:02x}")
+                            reason: format!("Failed to connect: Incorrect protocol version 0x{version:02x}")
                         }).await;
                         break;
                     }
-                    let server = server.lock().expect("other thread panicked");
+                    
+                    let verified = {
+                        let server = server.read().expect("other thread panicked");
 
-                    if server.last_salts.is_empty() || {
-                        let mut res = false;
-                        for salt in server.last_salts.iter() {
-                            let server_key = md5::compute(salt.to_owned() + &username);
-                            if &*server_key == key.as_bytes() {
-                                res = true;
-                                break;
+                        server.last_salts.is_empty() || {
+                            let mut res = false;
+                            for salt in &server.last_salts {
+                                let server_key = md5::compute(salt.to_owned() + &username);
+                                if *server_key == key.as_bytes() {
+                                    res = true;
+                                    break;
+                                }
                             }
+                            res
                         }
-                        res
-                    } {
-
+                    };
+                    
+                    if !verified {
+                        let _ = tx.send(Outgoing::Disconnect {
+                            reason: "Failed to connect: Unauthorized".to_string()
+                        }).await;
+                        break;
                     }
+                    
+                    let _ = player_name.set(username);
                 }
                 Incoming::SetBlock { position, state } => {
-                    /// Get the world that the player is in
-                    let res = {
-                        let player_name = &player.lock().expect("other thread panicked").username;
-                        server.lock().expect("other thread panicked").players_connected.get(player_name)
-                    };
+                    let lock = server.write().expect("other thread panicked");
+                    // Get the world that the player is in
+                    let Some((world, id)) = player_name.get().and_then(|name| lock.players_connected.get(name).cloned()) 
+                        else { continue /* We aren't ready to recieve these yet */ };
+                    
                 }
                 Incoming::SetLocation { location } => {
 

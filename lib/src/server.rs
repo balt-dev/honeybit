@@ -79,4 +79,10 @@ pub struct Config {
     pub heartbeat_spacing: Duration,
     /// The port to host the server on.
     pub port: u16,
+    /// The maximum amount of players allowed on the server.
+    /// 
+    /// If this is set to 0, then the amount will be unlimited.
+    pub max_players: usize,
+    /// Whether the server should be public in the server list.
+    pub public: bool
 }
