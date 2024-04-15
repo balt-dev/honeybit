@@ -663,6 +663,7 @@ dependencies = [
  "rand",
  "reqwest",
  "serde",
+ "serde_json",
  "simplelog",
  "tokio",
  "toml",

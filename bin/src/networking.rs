@@ -1,6 +1,9 @@
 //! Handles general networking
 
 use std::sync::Mutex;
+use reqwest::StatusCode;
+use tokio::sync::broadcast::error::SendError;
+
 use {
     std::{
         net::Ipv4Addr,
@@ -41,7 +44,10 @@ pub enum ServerCommand {
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum PlayerCommand {
-    Disconnect
+    Disconnect {
+        /// The reason for disconnection.
+        reason: String
+    }
 }
 
 /// A server that hasn't been started yet.
@@ -65,8 +71,10 @@ pub struct Player {
 
 impl Player {
     /// Notifies the player that it has disconnected from the server.
-    pub fn notify_disconnect(&self, reason: impl AsRef<str>) {
-        todo!()
+    pub fn notify_disconnect(&self, reason: impl Into<String>) -> Result<(), SendError<PlayerCommand>> {
+        self.handle.send(PlayerCommand::Disconnect {
+            reason: reason.into()
+        }).map(|_| ())
     }
 }
 
@@ -74,11 +82,18 @@ impl Player {
 /// A running server. All fields of this are [`Arc<RwLock<_>>`]s, so cloning this will not clone its insides.
 /// Think of it like a handle.
 pub struct RunningServer {
+    /// The worlds in the server.
     pub worlds: Arc<Mutex<HashMap<String, Arc<Mutex<World>>>>>,
+    /// The configuration of the server.
     pub config: Arc<Mutex<Config>>,
+    /// A mapping of player names to their info.
     pub connected_players: Arc<Mutex<HashMap<String, Player>>>,
+    /// A list of the last few last salts generated.
     pub last_salts: Arc<Mutex<VecDeque<String>>>,
-    pub commander: Arc<Mutex<Sender<ServerCommand>>>
+    /// A handle to send commands to the server.
+    pub commander: Arc<Mutex<Sender<ServerCommand>>>,
+    /// The server's current URL. Expect this to change often.
+    pub url: Arc<Mutex<String>>
 }
 
 impl RunningServer {
@@ -92,7 +107,8 @@ impl RunningServer {
             config: Arc::new(Mutex::new(idle.config)),
             connected_players: Arc::default(),
             last_salts: Arc::default(),
-            commander: Arc::new(Mutex::new(tx))
+            commander: Arc::new(Mutex::new(tx)),
+            url: Arc::new(Mutex::new(String::new()))
         }
     }
 }
@@ -169,6 +185,13 @@ impl IdleServer {
     }
 }
 
+#[derive(serde::Deserialize, Clone, Debug)]
+struct HeartbeatResponse {
+    errors: Vec<Vec<String>>,
+    response: String,
+    status: String
+}
+
 impl RunningServer {
     /// Disconnect a player from the server by username.
     pub fn disconnect(&mut self, username: impl AsRef<str>, reason: impl AsRef<str>) {
@@ -186,6 +209,7 @@ impl RunningServer {
     }
 
     /// Starts the heartbeat pings. This will block.
+    #[allow(clippy::too_many_lines)]
     async fn start_heartbeat(self) {
         let mut rand = StdRng::from_entropy();
         let http = reqwest::Client::new();
@@ -263,8 +287,41 @@ impl RunningServer {
 
                 match res {
                     Ok(Ok(response)) =>  {
-                        todo!("Handle response: {}", response.text().await.unwrap_or("<err>".into()))
+                        let stat = response.status();
+                        if StatusCode::OK != stat {
+                            warn!(
+                                "Got status code {} from heartbeat server{}",
+                                stat.as_u16(),
+                                stat.canonical_reason().map(|reason| format!(": {reason}")).unwrap_or_default()
+                            );
+                            break 'b;
+                        }
 
+                        let Ok(text) = response.text().await else {
+                            warn!("Failed to get text of response to heartbeat ping");
+                            break 'b;
+                        };
+
+                        let Ok(response): Result<HeartbeatResponse, _> = serde_json::from_str(&text) else {
+                            warn!("Failed to decode heartbeat response as JSON: {text}");
+                            break 'b;
+                        };
+                        
+                        if response.status != "success" {
+                            // The ping failed, we warn and stop
+                            warn!("Heartbeat ping failed: ");
+                            for errors in response.errors {
+                                for error in errors {
+                                    warn!("\t- {error}");
+                                }
+                            }
+                            break 'b;
+                        }
+
+                        debug!("Successfully got response of {response:?}");
+                        let url = response.response;
+
+                        *t!(self.url.lock()) = url;
                     },
                     Ok(Err(err)) => {
                         warn!("Failed to send heartbeat ping: {err}");

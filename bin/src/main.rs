@@ -1,4 +1,4 @@
-#![warn(clippy::pedantic, clippy::perf, missing_docs, clippy::missing_docs_in_private_items)]
+#![warn(clippy::pedantic, clippy::perf, missing_docs)]
 
 #![doc = include_str!("../README.md")]
 
@@ -17,7 +17,7 @@ extern crate log;
 async fn main() -> ExitCode {
     simplelog::TermLogger::init(
         if cfg!(debug_assertions) {
-            simplelog::LevelFilter::Trace
+            simplelog::LevelFilter::Debug
         } else {
             simplelog::LevelFilter::Info
         },
@@ -44,11 +44,11 @@ async fn inner_main() -> Result<(), Box<dyn Error>> {
             default_world: String::new(),
             banned_ips: HashMap::default(),
             banned_users: HashMap::default(),
-            kept_salts: 0,
+            kept_salts: 12,
             name: "OxineTesting".to_string(),
             heartbeat_url: "https://www.classicube.net/server/heartbeat".into(),
             heartbeat_retries: 5,
-            heartbeat_spacing: Duration::from_millis(750),
+            heartbeat_spacing: Duration::from_secs(5),
             heartbeat_timeout: Duration::from_secs(5),
             port: 25565,
             max_players: 64,
