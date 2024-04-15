@@ -194,18 +194,21 @@ struct HeartbeatResponse {
 
 impl RunningServer {
     /// Disconnect a player from the server by username.
-    pub fn disconnect(&mut self, username: impl AsRef<str>, reason: impl AsRef<str>) {
+    /// 
+    /// # Errors
+    /// Returns an error if the player failed to be notified that it was disconnected.
+    pub fn disconnect(&mut self, username: impl AsRef<str>, reason: impl Into<String>) -> Result<(), SendError<PlayerCommand>> {
         t!(self.connected_players.lock())
             .remove(username.as_ref())
-            .inspect(|player| {
+            .map(|player| {
                 if let Some(world_arc) = t!(self.worlds.lock())
                     .get(&player.world)
                 {
                     let mut world_lock = t!(world_arc.lock());
                     world_lock.remove_player(player.id);
                 }
-                player.notify_disconnect(reason);
-            });
+                player.notify_disconnect(reason)
+            }).unwrap_or(Ok(()))
     }
 
     /// Starts the heartbeat pings. This will block.
@@ -307,9 +310,11 @@ impl RunningServer {
                             break 'b;
                         };
                         
+                        debug!("Successfully got response of {response:?}");
+                        
                         if response.status != "success" {
                             // The ping failed, we warn and stop
-                            warn!("Heartbeat ping failed: ");
+                            warn!("Heartbeat ping failed:");
                             for errors in response.errors {
                                 for error in errors {
                                     warn!("\t- {error}");
@@ -318,9 +323,19 @@ impl RunningServer {
                             break 'b;
                         }
 
-                        debug!("Successfully got response of {response:?}");
+                        if !response.errors.is_empty() {
+                            let length = response.errors.len();
+                            warn!("Got {} warning{} from heartbeat:", length, if length > 1 {"s"} else {""});
+                            for errors in response.errors {
+                                for error in errors {
+                                    warn!("\t- {error}");
+                                }
+                            }
+                        }
+
                         let url = response.response;
 
+                        debug!("New url: {url}");
                         *t!(self.url.lock()) = url;
                     },
                     Ok(Err(err)) => {
