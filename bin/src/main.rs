@@ -44,7 +44,7 @@ async fn inner_main() -> Result<(), Box<dyn Error>> {
             default_world: String::new(),
             banned_ips: HashMap::default(),
             banned_users: HashMap::default(),
-            kept_salts: 20,
+            kept_salts: 0,
             name: "OxineTesting".to_string(),
             heartbeat_url: "https://www.classicube.net/server/heartbeat".into(),
             heartbeat_retries: 5,

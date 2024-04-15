@@ -147,14 +147,14 @@ impl IdleServer {
                     let _ = stream.shutdown().await;
                     continue;
                 };
-                
+
                 let peer_ip = peer.ip();
-                
+
                 let banned = {
                     let conf = t!(server.config.lock());
                     conf.banned_ips.contains_key(&peer_ip)
                 };
-                
+
                 if banned {
                     info!("Banned IP {peer_ip} attempted to join");
                     let _ = stream.shutdown().await;
@@ -221,7 +221,7 @@ impl RunningServer {
             let salt = {
                 let mut lock = t!(self.last_salts.lock());
                 if kept_salts == 0 {
-                    String::new() // no salt to be found
+                    "0".into() // no salt to be found
                 } else {
                     let salt = rand.salt();
                     if lock.len() < kept_salts {
@@ -237,32 +237,42 @@ impl RunningServer {
                 }
             };
 
-            let res = http.post(&url)
-                .query(&[("port", port)])
-                .query(&[("max", max_players)])
-                .query(&[("name", &name)])
-                .query(&[("public", &public)])
-                .query(&[("version", 7)])
-                .query(&[("salt", salt)])
-                .query(&[("users", user_count)])
-                .build();
-            match res {
-                Ok(req) => 'b: {
-                    debug!("Sending POST request to {}", req.url());
-                    let Ok(res) = time::timeout(timeout, http.execute(req)).await else {
-                        warn!("Heartbeat server failed to respond in {timeout:?}");
+            'b: {
+                let request = match
+                    http.get(&url)
+                        .query(&[("port", port)])
+                        .query(&[("max", max_players)])
+                        .query(&[("name", &name)])
+                        .query(&[("public", &public)])
+                        .query(&[("version", 7)])
+                        .query(&[("salt", salt)])
+                        .query(&[("users", user_count)])
+                        .query(&[("json", true)])
+                        .build()
+                {
+                    Ok(v) => v,
+                    Err(err) => {
+                        warn!("Failed to build heartbeat URL: {err}");
                         break 'b;
-                    };
-                    let Ok(response) = res else {
-                        let err = res.unwrap_err(); // Unwrap is optimized away
+                    }
+                };
+
+                debug!("Sending heartbeat with URL {}", request.url());
+
+                let res = time::timeout(timeout, http.execute(request)).await;
+
+                match res {
+                    Ok(Ok(response)) =>  {
+                        todo!("Handle response: {}", response.text().await.unwrap_or("<err>".into()))
+
+                    },
+                    Ok(Err(err)) => {
                         warn!("Failed to send heartbeat ping: {err}");
-                        break 'b;
-                    };
-                    
-                    todo!("Handle response: {}", response.text().await.unwrap_or("<err>".into()))
-                    
-                },
-                Err(e) => warn!("Failed to send heartbeat ping: {e}")
+                    }
+                    Err(_) => {
+                        warn!("Heartbeat server failed to respond in {timeout:?}");
+                    }
+                }
             }
 
             time::sleep_until(wait_until.into()).await;
@@ -273,7 +283,7 @@ impl RunningServer {
     /// Handles a TCP connection, consuming it. This will block.
     async fn handle_connection(self, tcp_stream: TcpStream) {
         todo!("Handle connections")
-        
+
     }
 
 }
