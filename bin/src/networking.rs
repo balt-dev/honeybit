@@ -1,32 +1,18 @@
 //! Handles general networking
 
-use std::sync::Mutex;
-use reqwest::StatusCode;
-use tokio::sync::broadcast::error::SendError;
-
 use {
-    std::{
-        net::Ipv4Addr,
-        sync::{Arc, RwLock},
-        collections::{HashMap, VecDeque},
-        io::ErrorKind,
-        time::Instant
-    },
-     rand::{
+    oxine::{
+        networking::OutgoingPacketType, packets::Outgoing, server::{Config, SaltExt}, world::World
+    }, rand::{
         rngs::StdRng,
         SeedableRng
-    },
-    tokio::{
-        io,
-        net::{TcpListener, TcpStream},
-        sync::broadcast::{self, Sender},
-        time,
-        io::AsyncWriteExt
-    },
-    oxine::{
-        server::Config,
-        world::World,
-        server::SaltExt
+    }, reqwest::StatusCode, std::{
+        collections::{HashMap, VecDeque}, io::ErrorKind, net::Ipv4Addr, sync::{Arc, Mutex, OnceLock}, time::Instant
+    }, tokio::{
+        io::{self, AsyncWriteExt},
+        net::{tcp::OwnedWriteHalf, TcpListener, TcpStream},
+        sync::{broadcast::{self, error::SendError, Sender}, mpsc},
+        time
     }
 };
 
@@ -66,7 +52,9 @@ pub struct Player {
     /// The ID the player has in the world they're in.
     pub id: i8,
     /// A handle to the player's processing loop.
-    pub handle: Sender<PlayerCommand>
+    pub handle: Sender<PlayerCommand>,
+    /// The player's username.
+    pub username: String
 }
 
 impl Player {
@@ -76,6 +64,8 @@ impl Player {
             reason: reason.into()
         }).map(|_| ())
     }
+
+    /// Create a new player.
 }
 
 #[derive(Debug, Clone)]
@@ -354,10 +344,15 @@ impl RunningServer {
 
     /// Handles a TCP connection, consuming it. This will block.
     async fn handle_connection(self, tcp_stream: TcpStream) {
-        todo!("Handle connections")
+        let (sender, mut reciever) = mpsc::channel::<Outgoing>(100);
+        let hb_sender = sender.clone();
 
+        let (mut reader, mut writer) = tcp_stream.into_split();
+
+        let player_name = Arc::new(OnceLock::new());
+
+        let player = Player::vessel();
     }
-
 }
 
 /*

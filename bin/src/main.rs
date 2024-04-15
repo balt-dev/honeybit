@@ -39,8 +39,8 @@ async fn inner_main() -> Result<(), Box<dyn Error>> {
     let server: IdleServer = IdleServer {
         worlds: HashMap::default(),
         config: Config {
-            packet_timeout: Duration::from_secs(5),
-            ping_spacing: Duration::from_millis(50),
+            packet_timeout: Duration::from_secs(10),
+            ping_spacing: Duration::from_millis(500),
             default_world: String::new(),
             banned_ips: HashMap::default(),
             banned_users: HashMap::default(),
@@ -58,9 +58,7 @@ async fn inner_main() -> Result<(), Box<dyn Error>> {
     
     let handle = server.start().await?;
     
-    loop {
-        tokio::time::sleep(Duration::from_secs(1)).await;
-    }
+    tokio::time::sleep(Duration::MAX).await;
     
-    todo!()
+    unreachable!("the program should not be running for 500 billion years")
 }
