@@ -1,4 +1,4 @@
-#![warn(clippy::pedantic, clippy::perf, missing_docs, clippy::missing_docs_in_private_items)]
+#![warn(clippy::pedantic, clippy::perf, missing_docs)]
 #![allow(incomplete_features, clippy::doc_markdown)]
 
 //! A simple server software for Classic Minecraft and ClassiCube.

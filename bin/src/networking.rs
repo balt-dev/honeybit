@@ -2,16 +2,19 @@
 
 use {
     oxine::{
-        networking::OutgoingPacketType, packets::Outgoing, server::{Config, SaltExt}, world::World
-    }, rand::{
+        packets::Outgoing, server::{Config, SaltExt}, world::World
+    },
+    rand::{
         rngs::StdRng,
         SeedableRng
-    }, reqwest::StatusCode, std::{
+    },
+    reqwest::StatusCode, std::{
         collections::{HashMap, VecDeque}, io::ErrorKind, net::Ipv4Addr, sync::{Arc, Mutex, OnceLock}, time::Instant
-    }, tokio::{
+    },
+    tokio::{
         io::{self, AsyncWriteExt},
-        net::{tcp::OwnedWriteHalf, TcpListener, TcpStream},
-        sync::{broadcast::{self, error::SendError, Sender}, mpsc},
+        net::{TcpListener, TcpStream},
+        sync::mpsc,
         time
     }
 };
@@ -52,20 +55,30 @@ pub struct Player {
     /// The ID the player has in the world they're in.
     pub id: i8,
     /// A handle to the player's processing loop.
-    pub handle: Sender<PlayerCommand>,
+    pub handle: mpsc::Sender<PlayerCommand>,
     /// The player's username.
     pub username: String
 }
 
 impl Player {
     /// Notifies the player that it has disconnected from the server.
-    pub fn notify_disconnect(&self, reason: impl Into<String>) -> Result<(), SendError<PlayerCommand>> {
+    pub async fn notify_disconnect(&self, reason: impl Into<String>) -> Result<(), mpsc::error::SendError<PlayerCommand>> {
         self.handle.send(PlayerCommand::Disconnect {
             reason: reason.into()
-        }).map(|_| ())
+        }).await.map(|_| ())
     }
 
-    /// Create a new player.
+    /// Create a new empty player.
+    pub async fn new() -> Player {
+        let (tx, mut rx) = mpsc::channel(128);
+        
+        Player {
+            world: String::new(),
+            id: -1,
+            handle: tx,
+            username: String::new()
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -81,13 +94,13 @@ pub struct RunningServer {
     /// A list of the last few last salts generated.
     pub last_salts: Arc<Mutex<VecDeque<String>>>,
     /// A handle to send commands to the server.
-    pub commander: Arc<Mutex<Sender<ServerCommand>>>,
+    pub commander: Arc<Mutex<mpsc::Sender<ServerCommand>>>,
     /// The server's current URL. Expect this to change often.
     pub url: Arc<Mutex<String>>
 }
 
 impl RunningServer {
-    fn new(idle: IdleServer, tx: Sender<ServerCommand>) -> RunningServer {
+    fn new(idle: IdleServer, tx: mpsc::Sender<ServerCommand>) -> RunningServer {
         RunningServer {
             worlds: Arc::new(Mutex::new(
                 idle.worlds.into_iter().map(
@@ -110,8 +123,8 @@ impl IdleServer {
     /// Errors if the server fails to establish a TCP connection to the configured server port.
     pub async fn start(self) -> io::Result<RunningServer> {
         info!("Starting server...");
-        let (server_tx, _) =
-            broadcast::channel::<ServerCommand>(100);
+        let (server_tx, _server_rx) =
+            mpsc::channel::<ServerCommand>(100);
 
         let listener = TcpListener::bind((
             Ipv4Addr::new(127, 0, 0, 1),
@@ -187,18 +200,18 @@ impl RunningServer {
     /// 
     /// # Errors
     /// Returns an error if the player failed to be notified that it was disconnected.
-    pub fn disconnect(&mut self, username: impl AsRef<str>, reason: impl Into<String>) -> Result<(), SendError<PlayerCommand>> {
-        t!(self.connected_players.lock())
-            .remove(username.as_ref())
-            .map(|player| {
-                if let Some(world_arc) = t!(self.worlds.lock())
-                    .get(&player.world)
-                {
-                    let mut world_lock = t!(world_arc.lock());
-                    world_lock.remove_player(player.id);
-                }
-                player.notify_disconnect(reason)
-            }).unwrap_or(Ok(()))
+    pub async fn disconnect(&mut self, username: impl AsRef<str>, reason: impl Into<String>) -> Result<(), mpsc::error::SendError<PlayerCommand>> {
+        let mut lock = t!(self.connected_players.lock());
+        if let Some(player) = lock.remove(username.as_ref()) {
+            if let Some(world_arc) = t!(self.worlds.lock())
+                .get(&player.world)
+            {
+                let mut world_lock = t!(world_arc.lock());
+                world_lock.remove_player(player.id);
+            }
+            player.notify_disconnect(reason).await?;
+        }
+        Ok(())
     }
 
     /// Starts the heartbeat pings. This will block.
@@ -348,10 +361,8 @@ impl RunningServer {
         let hb_sender = sender.clone();
 
         let (mut reader, mut writer) = tcp_stream.into_split();
-
-        let player_name = Arc::new(OnceLock::new());
-
-        let player = Player::vessel();
+        
+        let player = Player::new().await;
     }
 }
 

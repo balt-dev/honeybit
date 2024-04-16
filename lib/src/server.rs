@@ -17,12 +17,10 @@ pub trait SaltExt {
 impl SaltExt for StdRng {
     #[inline]
     fn salt(&mut self) -> String {
-        /// This is the minimum size of the number to fill a 16-bit salt.
-        const SALT_LEN16_MIN: u128 = 768_909_704_948_766_668_552_634_368;
-        let num: u128 = self.gen_range(SALT_LEN16_MIN..=u128::MAX);
-        let mut salt = base62::encode(num);
-        salt.truncate(16);
-        salt
+        const SALT_MIN: u128 =    768_909_704_948_766_668_552_634_368; // base62::decode("1000000000000000").unwrap();
+        const SALT_MAX: u128 = 47_672_401_706_823_533_450_263_330_815; // base62::decode("zzzzzzzzzzzzzzzz").unwrap();
+        let num: u128 = self.gen_range(SALT_MIN ..= SALT_MAX);
+        base62::encode(num)
     }
 }
 
