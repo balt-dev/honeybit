@@ -1,9 +1,7 @@
 //! Handles the actual server.
 
 use std::{
-    net::IpAddr,
-    time::Duration,
-    collections::HashMap
+    collections::{HashMap, HashSet}, net::IpAddr, time::Duration
 };
 
 use rand::{Rng, rngs::StdRng};
@@ -39,6 +37,8 @@ pub struct Config {
     pub banned_ips: HashMap<IpAddr, String>,
     /// A mapping of banned usernames to their ban reasons.
     pub banned_users: HashMap<String, String>,
+    /// A set of usernames that are operators.
+    pub operators: HashSet<String>,
     /// The amount of salts to keep for verifying users.
     /// 
     /// If this is zero, then users will not be verified.
@@ -66,5 +66,7 @@ pub struct Config {
     /// If this is set to 0, then the amount will be unlimited.
     pub max_players: usize,
     /// Whether the server should be public in the server list.
-    pub public: bool
+    pub public: bool,
+    /// The server's MOTD.
+    pub motd: String
 }

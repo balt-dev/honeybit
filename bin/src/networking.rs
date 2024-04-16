@@ -2,17 +2,16 @@
 
 use {
     crate::player::PlayerCommand, oxine::{
-        server::{Config, SaltExt},
-        world::World
+        packets::Outgoing, server::{Config, SaltExt}, world::World
     }, rand::{
         rngs::StdRng,
         SeedableRng
     }, reqwest::StatusCode, std::{
-        collections::{HashMap, VecDeque}, io::ErrorKind,, sync::Arc, net::Ipv4Addr, time::Instant
+        collections::{HashMap, VecDeque}, io::ErrorKind, net::Ipv4Addr, sync::{atomic::Ordering, Arc, Mutex}, time::Instant
     }, tokio::{
         io::{self, AsyncWriteExt},
         net::{TcpListener, TcpStream},
-        sync::{mpsc, Mutex},
+        sync::mpsc,
         time
     }
 };
@@ -60,9 +59,9 @@ pub struct RunningServer {
     /// A list of the last few last salts generated.
     pub last_salts: Arc<Mutex<VecDeque<String>>>,
     /// A handle to send commands to the server.
-    pub commander: Arc<Mutex<mpsc::Sender<ServerCommand>>>,
+    pub commander: mpsc::Sender<ServerCommand>,
     /// The server's current URL. Expect this to change often.
-    pub url: Arc<Mutex<String>>
+    pub url: Arc<Mutex<String>>,
 }
 
 impl RunningServer {
@@ -76,7 +75,7 @@ impl RunningServer {
             config: Arc::new(Mutex::new(idle.config)),
             connected_players: Arc::default(),
             last_salts: Arc::default(),
-            commander: Arc::new(Mutex::new(tx)),
+            commander: tx,
             url: Arc::new(Mutex::new(String::new()))
         }
     }
@@ -169,12 +168,6 @@ impl RunningServer {
     pub async fn disconnect(&mut self, username: impl AsRef<str>, reason: impl Into<String>) -> Result<(), mpsc::error::SendError<PlayerCommand>> {
         let mut lock = t!(self.connected_players.lock());
         if let Some(player) = lock.remove(username.as_ref()) {
-            if let Some(world_arc) = t!(self.worlds.lock())
-                .get(&player.world)
-            {
-                let mut world_lock = t!(world_arc.lock());
-                world_lock.remove_player(player.id);
-            }
             player.notify_disconnect(reason).await?;
         }
         Ok(())
@@ -323,19 +316,11 @@ impl RunningServer {
 
     /// Handles a TCP connection, consuming it. This will block.
     async fn handle_connection(self, tcp_stream: TcpStream) {
-        let (sender, mut reciever) = mpsc::channel::<PlayerCommand>(100);
-        let hb_sender = sender.clone();
-
-        let (mut reader, mut writer) = tcp_stream.into_split();
+        let (reader, writer) = tcp_stream.into_split();
         
-        let player = Player::new();
+        let player = Player::new(self.clone(), writer);
 
-        let timeout = {
-            let lock = self.config.lock().expect("other thread panicked");
-            lock.packet_timeout
-        };
-
-        Player::handle_packets(player, sender, reader, self).await;
+        player.handle_packets(reader, self).await;
     }
 }
 

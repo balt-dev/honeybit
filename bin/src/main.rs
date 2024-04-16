@@ -6,7 +6,7 @@ mod networking;
 mod player;
 
 use std::{error::Error, process::ExitCode};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 use oxine::server::Config;
 use crate::networking::IdleServer;
@@ -54,6 +54,8 @@ async fn inner_main() -> Result<(), Box<dyn Error>> {
             port: 25565,
             max_players: 64,
             public: false,
+            operators: HashSet::new(),
+            motd: "Oxine MOTD".into(),
         },
     };
     
