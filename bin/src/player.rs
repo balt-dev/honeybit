@@ -1,4 +1,4 @@
-use std::{convert, io::{self, ErrorKind}, sync::{atomic::AtomicI8, Arc, Mutex, TryLockError}};
+use std::{convert, io::{self, ErrorKind}, sync::{atomic::AtomicI8, Arc, Mutex, TryLockError}, time::Duration};
 
 use oxine::{networking::{IncomingPacketType as _, OutgoingPacketType}, packets::{Incoming, Outgoing, Vector3}, world::Location};
 use tokio::{net::{tcp::{OwnedReadHalf, OwnedWriteHalf}, TcpStream}, sync::mpsc::{self, Sender}, time};
@@ -29,8 +29,7 @@ pub enum PlayerCommand {
     },
     /// Initialize a player.
     Initialize {
-        username: String,
-        world: String
+        username: String
     }
 }
 
@@ -43,7 +42,7 @@ impl Player {
     }
 
     /// Create a new empty player.
-    pub fn new(server: RunningServer) -> Player {
+    pub fn new(server: RunningServer, writer: OwnedWriteHalf) -> Player {
         let (tx, mut rx) = mpsc::channel(128);
         
         let player = Player {
@@ -58,49 +57,48 @@ impl Player {
             }))
         };
 
-        tokio::spawn(player.clone().start_loop(rx, server));
+        tokio::spawn(player.clone().start_loops(rx, server, writer));
 
         player
     }
 
     /// Start the event loop for a player. This will handle all commands recieved over the Receiver, and start a task to periodically send heartbeats.
-    pub async fn start_loop(self, mut rx: mpsc::Receiver<PlayerCommand>, server: RunningServer) {
+    pub async fn start_loops(self, mut rx: mpsc::Receiver<PlayerCommand>, server: RunningServer, writer: OwnedWriteHalf) {
         
         let (packet_timeout, ping_spacing) = {
             let config = t!(server.config.lock());
             (config.packet_timeout, config.ping_spacing)
         };
 
-        tokio::spawn(self.clone().start_heartbeat(stream.clone(), packet_timeout, ping_spacing));
+        let (packet_send, packet_recv) = mpsc::channel(128);
+
+        tokio::spawn(self.clone().start_packets(packet_recv, writer, packet_timeout));
+        tokio::spawn(self.clone().start_heartbeat(packet_send.clone(), ping_spacing));
         
         while let Some(command) = rx.recv().await {
             match command {
                 PlayerCommand::Disconnect { reason } => {
-                    let stream_lock = t!(stream.lock());
-                    let _ = server.send_packet(
+                    let _ = packet_send.send(
                         Outgoing::Disconnect { reason }
-                        .store(stream_lock)
                     ).await;
                     break;
                 },
-                PlayerCommand::Initialize { username, world } => {
-                    let (name, motd, operator);
+                PlayerCommand::Initialize { username } => {
+                    let (name, motd, operator): (String, String, bool);
+                    #[allow(clippy::assigning_clones)]
                     {
                         let lock = t!(server.config.lock());
                         name = lock.name.clone();
                         motd = lock.motd.clone();
                         operator = lock.operators.contains(&username);
                     };
-                    let res = server.send_packet(Outgoing::ServerIdentification {
+                    let res = packet_send.send(Outgoing::ServerIdentification {
                             version: 7,
                             name,
                             motd,
                             operator
                         }
-                    )
-                        .await
-                        .map_err(|_| io::Error::from(ErrorKind::TimedOut))
-                        .and_then(convert::identity); // Flatten error (.flatten() is not stable yet)
+                    ).await;
                     if let Err(e) = res {
                         let _ = self.notify_disconnect(format!("Connection failed: {e}")).await;
                     }
@@ -109,17 +107,32 @@ impl Player {
         }
     }
 
+    /// Start the loop for sending packets to the client.
+    async fn start_packets(self, mut recv: mpsc::Receiver<Outgoing>, mut writer: OwnedWriteHalf, timeout: Duration) {
+        while let Some(packet) = recv.recv().await {
+            let Ok(()) = time::timeout(timeout, packet.store(&mut writer))
+                .await
+                .map_err(|_| io::Error::from(ErrorKind::TimedOut))
+                .and_then(convert::identity) // Flatten error (.flatten() is not stable yet)
+            else { break };
+        }
+    }
+
     /// Start the heartbeat loop for a player.
-    async fn start_heartbeat(self, mut stream: OwnedWriteHalf) {
-        
+    async fn start_heartbeat(self, send: Sender<Outgoing>, spacing: Duration) {
+        let mut interval = time::interval(spacing);
+
+        while send.send(Outgoing::Ping).await.is_ok() {
+            interval.tick().await;
+        }
     }
 
     /// Handle the packets for a player. This will block.
     pub async fn handle_packets(self, mut stream: OwnedReadHalf, server: RunningServer) {
 
-        let (verify, timeout, default_world) = {
+        let (verify, timeout) = {
             let lock = server.config.lock().expect("other thread panicked");
-            (lock.kept_salts != 0, lock.packet_timeout, lock.default_world.clone())
+            (lock.kept_salts != 0, lock.packet_timeout)
         };
 
         while !self.handle.is_closed() {
@@ -132,13 +145,10 @@ impl Player {
                 .and_then(convert::identity); // Flatten error (.flatten() is not stable yet)
 
             // Using a match instead of .map_err since I need to break
-            let res = match res {
-                Ok(packet) => packet,
-                Err(_) => {
-                    let _ = self.notify_disconnect("Could not deserialize packet").await;
+            let Ok(res) = res else {
+                let _ = self.notify_disconnect("Could not deserialize packet").await;
 
-                    break;
-                }
+                break;
             };
 
             // Actually handle the packet
@@ -173,8 +183,7 @@ impl Player {
                     }
                     
                     let Ok(()) = self.handle.send(PlayerCommand::Initialize {
-                        username,
-                        world: default_world.clone()
+                        username
                     }).await else { break };
                 }
 
