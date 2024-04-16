@@ -172,7 +172,10 @@ impl OutgoingPacketType for String {
         if !self.is_ascii() {
             return Err(io::Error::from(ErrorKind::InvalidData));
         }
-        destination.write_all(self.as_bytes()).await
+        let slice = self.as_bytes();
+        let mut buf = [b' '; 64];
+        buf[..slice.len()].copy_from_slice(&slice);
+        destination.write_all(&buf).await
     }
 }
 
