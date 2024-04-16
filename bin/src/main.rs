@@ -3,6 +3,7 @@
 #![doc = include_str!("../README.md")]
 
 mod networking;
+mod player;
 
 use std::{error::Error, process::ExitCode};
 use std::collections::HashMap;

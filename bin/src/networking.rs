@@ -1,25 +1,26 @@
 //! Handles general networking
 
 use {
-    oxine::{
-        packets::Outgoing, server::{Config, SaltExt}, world::World
-    },
-    rand::{
+    crate::player::PlayerCommand, oxine::{
+        server::{Config, SaltExt},
+        world::World
+    }, rand::{
         rngs::StdRng,
         SeedableRng
-    },
-    reqwest::StatusCode, std::{
-        collections::{HashMap, VecDeque}, io::ErrorKind, net::Ipv4Addr, sync::{Arc, Mutex, OnceLock}, time::Instant
-    },
-    tokio::{
+    }, reqwest::StatusCode, std::{
+        collections::{HashMap, VecDeque}, io::ErrorKind,, sync::Arc, net::Ipv4Addr, time::Instant
+    }, tokio::{
         io::{self, AsyncWriteExt},
         net::{TcpListener, TcpStream},
-        sync::mpsc,
+        sync::{mpsc, Mutex},
         time
     }
 };
 
+use crate::player::Player;
+
 /// Wrapper around locking to easily propagate panics
+#[macro_export]
 macro_rules! t {
     ($e: expr) => {
         {$e}.expect("other thread panicked")
@@ -28,14 +29,12 @@ macro_rules! t {
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum ServerCommand {
-    Stop
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub enum PlayerCommand {
-    Disconnect {
-        /// The reason for disconnection.
-        reason: String
+    Stop,
+    SendMessage {
+        /// The username of the player that sent the message.
+        username: String,
+        /// The message to be sent.
+        message: String
     }
 }
 
@@ -46,39 +45,6 @@ pub struct IdleServer {
     pub worlds: HashMap<String, World>,
     /// The configuration for the server.
     pub config: Config
-}
-
-#[derive(Debug, Clone)]
-pub struct Player {
-    /// The world the player is in.
-    pub world: String,
-    /// The ID the player has in the world they're in.
-    pub id: i8,
-    /// A handle to the player's processing loop.
-    pub handle: mpsc::Sender<PlayerCommand>,
-    /// The player's username.
-    pub username: String
-}
-
-impl Player {
-    /// Notifies the player that it has disconnected from the server.
-    pub async fn notify_disconnect(&self, reason: impl Into<String>) -> Result<(), mpsc::error::SendError<PlayerCommand>> {
-        self.handle.send(PlayerCommand::Disconnect {
-            reason: reason.into()
-        }).await.map(|_| ())
-    }
-
-    /// Create a new empty player.
-    pub async fn new() -> Player {
-        let (tx, mut rx) = mpsc::channel(128);
-        
-        Player {
-            world: String::new(),
-            id: -1,
-            handle: tx,
-            username: String::new()
-        }
-    }
 }
 
 #[derive(Debug, Clone)]
@@ -357,12 +323,19 @@ impl RunningServer {
 
     /// Handles a TCP connection, consuming it. This will block.
     async fn handle_connection(self, tcp_stream: TcpStream) {
-        let (sender, mut reciever) = mpsc::channel::<Outgoing>(100);
+        let (sender, mut reciever) = mpsc::channel::<PlayerCommand>(100);
         let hb_sender = sender.clone();
 
         let (mut reader, mut writer) = tcp_stream.into_split();
         
-        let player = Player::new().await;
+        let player = Player::new();
+
+        let timeout = {
+            let lock = self.config.lock().expect("other thread panicked");
+            lock.packet_timeout
+        };
+
+        Player::handle_packets(player, sender, reader, self).await;
     }
 }
 
@@ -377,44 +350,6 @@ async fn handle_stream(config: Config, server: Arc<RwLock<Server>>, stream: TcpS
 
     let recv_server = server.clone();
     let recv_name = player_name.clone();
-
-    let recv_task = tokio::spawn(async move {
-        while let Some(packet) = rx.recv().await {
-            let res = time::timeout(config.packet_timeout, packet.store(&mut write)).await;
-            match res {
-                Err(_) => { // Timeout
-                    let _ = time::timeout(
-                        config.packet_timeout,
-                        Outgoing::Disconnect {
-                            reason: "Connection timed out".to_string()
-                        }.store(&mut write)
-                    ).await;
-                    rx.close();
-                    break;
-                },
-                Ok(Err(err)) => { // Connection error
-                    let _ = time::timeout(
-                        config.packet_timeout,
-                        Outgoing::Disconnect {
-                            reason: format!("Connection error: {err}")
-                        }.store(&mut write)
-                    ).await;
-                    rx.close();
-                    break;
-                },
-                Ok(Ok(())) => {}
-            }
-            if let Outgoing::Disconnect { .. } = packet {
-                rx.close();
-            }
-            if rx.is_closed() {
-                if let Some(username) = recv_name.get() {
-                    let mut lock = recv_server.write().expect("other thread panicked");
-                    lock.disconnect(username);
-                }
-            }
-        }
-    });
 
     let send_task: JoinHandle<()> = tokio::spawn(async move {
         while !tx.is_closed() {

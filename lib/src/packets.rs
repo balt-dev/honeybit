@@ -4,7 +4,7 @@ use fixed::{
     FixedI8, FixedU16,
     types::extra::U5
 };
-use mint::Vector3;
+pub use mint::Vector3;
 use crate::world::Location;
 
 #[allow(non_camel_case_types)]
