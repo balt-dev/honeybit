@@ -176,21 +176,15 @@ impl OutgoingPacketType for String {
 
 impl IncomingPacketType for [u8; 1024] {
     async fn load(mut source: impl AsyncRead + Unpin) -> io::Result<Self> {
-        let length = u16::load(&mut source).await?;
         let mut buf = [0; 1024];
-        source.read_exact(&mut buf[..length as usize]).await?;
+        source.read_exact(&mut buf).await?;
         Ok(buf)
     }
 }
 
 impl OutgoingPacketType for [u8; 1024] {
     async fn store(&self, mut destination: impl AsyncWrite + Unpin) -> io::Result<()> {
-        let length = self.len().min(1024) as u16;
-        length.store(&mut destination).await?;
-        let length = length as usize;
-        let mut buf = [0; 1024];
-        buf[..length].copy_from_slice(&self[..length]);
-        destination.write_all(&buf).await
+        destination.write_all(self).await
     }
 }
 
