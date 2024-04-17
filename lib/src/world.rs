@@ -67,7 +67,7 @@ impl Default for LevelData {
     }
 }
 
-/// A simple 5x5 world, for use as a default world placeholder.
+/// A simple 5x7x5 world, for use as a default world placeholder.
 static DEFAULT_LEVEL_DATA: [u8; 5 * 5 * 7] = [
     // Layer 0
         0x03, 0x03, 0x03, 0x03, 0x03,
