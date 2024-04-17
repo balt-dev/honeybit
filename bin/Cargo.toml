@@ -17,4 +17,5 @@ oxine = {path = "../lib"}
 rand = "0.8"
 reqwest = "0.12"
 md5 = "0.7"
-
+cfg-if = "1"
+flate2 = "1"

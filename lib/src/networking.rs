@@ -9,6 +9,7 @@ use crate::{
     world::Location,
     packets::*
 };
+use codepage_437::{BorrowFromCp437, ToCp437};
 
 // I'll be real, I could've used serde for this. I just didn't want to.
 
@@ -22,7 +23,7 @@ mod sealed {
     impl Sealed for x8 {}
     impl Sealed for u16 {}
     impl Sealed for x16 {}
-    impl Sealed for Vec<u8> {}
+    impl Sealed for [u8; 1024] {}
     impl<T: Sealed> Sealed for Vector3<T> {}
     impl Sealed for String {}
     impl Sealed for Incoming {}
@@ -154,48 +155,41 @@ impl IncomingPacketType for String {
     async fn load(mut source: impl AsyncRead + Unpin) -> io::Result<Self> {
         let mut buf = [0; 64];
         source.read_exact(&mut buf).await?;
-        buf.is_ascii()
-            // SAFETY: We checked that this is valid ASCII above.
-            // By using unchecked, we avoid the unwrap, which would
-            // not get optimized out otherwise.
-            .then(|| {
-                unsafe { String::from_utf8_unchecked(Vec::from(buf)) }
-                    .trim_end()
-                    .to_string()
-            })
-            .ok_or(io::Error::from(ErrorKind::InvalidData))
+        let borrow = String::borrow_from_cp437(&buf, &codepage_437::CP437_WINGDINGS);
+        // Conversion from a buffer ot CP437 is infallible
+        Ok(borrow.trim_end().into())
     }
 }
 
 impl OutgoingPacketType for String {
     async fn store(&self, mut destination: impl AsyncWrite + Unpin) -> io::Result<()> {
-        if !self.is_ascii() {
+        let Ok(slice) = self.to_cp437(&codepage_437::CP437_WINGDINGS) else {
             return Err(io::Error::from(ErrorKind::InvalidData));
-        }
-        let slice = self.as_bytes();
+        };
         let mut buf = [b' '; 64];
-        buf[..slice.len()].copy_from_slice(&slice);
+        let trunc_len = slice.len().min(64);
+        buf[..trunc_len].copy_from_slice(&slice[..trunc_len]);
         destination.write_all(&buf).await
     }
 }
 
 
-impl IncomingPacketType for Vec<u8> {
+impl IncomingPacketType for [u8; 1024] {
     async fn load(mut source: impl AsyncRead + Unpin) -> io::Result<Self> {
         let length = u16::load(&mut source).await?;
         let mut buf = [0; 1024];
-        source.read_exact(&mut buf).await?;
-        Ok(Vec::from(&buf[..length as usize]))
+        source.read_exact(&mut buf[..length as usize]).await?;
+        Ok(buf)
     }
 }
 
-impl OutgoingPacketType for Vec<u8> {
+impl OutgoingPacketType for [u8; 1024] {
     async fn store(&self, mut destination: impl AsyncWrite + Unpin) -> io::Result<()> {
         let length = self.len().min(1024) as u16;
         length.store(&mut destination).await?;
         let length = length as usize;
         let mut buf = [0; 1024];
-        buf[..length].copy_from_slice(&self.as_slice()[..length]);
+        buf[..length].copy_from_slice(&self[..length]);
         destination.write_all(&buf).await
     }
 }
@@ -253,8 +247,9 @@ impl OutgoingPacketType for Outgoing {
             },
             Outgoing::Ping => 0x1u8.store(destination).await,
             Outgoing::LevelInit => 0x2u8.store(destination).await,
-            Outgoing::LevelDataChunk { data_chunk, percent_complete } => {
+            Outgoing::LevelDataChunk { data_length, data_chunk, percent_complete } => {
                 0x3u8.store(&mut destination).await?;
+                data_length.store(&mut destination).await?;
                 data_chunk.store(&mut destination).await?;
                 percent_complete.store(destination).await
             },

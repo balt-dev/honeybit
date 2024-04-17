@@ -13,7 +13,9 @@ pub struct World {
     /// A list of available player IDs.
     available_ids: ArrayVec<i8, 256>,
     /// The stored level data of the world.
-    level_data: LevelData
+    pub level_data: LevelData,
+    /// A player's default location.
+    default_location: Location
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -65,12 +67,51 @@ impl Default for LevelData {
     }
 }
 
+/// A simple 5x5 world, for use as a default world placeholder.
+static DEFAULT_LEVEL_DATA: [u8; 5 * 5 * 5] = [
+    // Layer 1
+        0x02, 0x02, 0x02, 0x02, 0x02,
+        0x02, 0x02, 0x02, 0x02, 0x02,
+        0x02, 0x02, 0x02, 0x02, 0x02,
+        0x02, 0x02, 0x02, 0x02, 0x02,
+        0x02, 0x02, 0x02, 0x02, 0x02,
+    // Layer 2
+        0x31, 0x15, 0x15, 0x15, 0x00,
+        0x28, 0x00, 0x00, 0x00, 0x00,
+        0x28, 0x00, 0x00, 0x00, 0x00,
+        0x28, 0x00, 0x00, 0x41, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00,
+    // Layer 3
+        0x25, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00,
+    // Layer 4
+        0x25, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x41, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00,
+    // Layer 5
+        0x25, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x41, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00,
+];
+
 impl Default for World {
     fn default() -> Self {
         Self {
             players: IntMap::default(),
             available_ids: (i8::MIN ..= i8::MAX).collect(),
-            level_data: LevelData::new(vec![], Vector3 {x: 0, y: 0, z: 0})
+            level_data: LevelData::new(Vec::from(DEFAULT_LEVEL_DATA), Vector3 {x: 5, y: 5, z: 5}),
+            default_location: Location {
+                position: Vector3 {x: x16::from_num(2.5), y: 1.into(), z: x16::from_num(2.5)},
+                yaw: 0,
+                pitch: 0,
+            }
         }
     }
 }
@@ -92,9 +133,9 @@ impl World {
     
     /// Creates a new player in the world. Returns the new ID, or None if the server is full.
     #[inline]
-    pub fn create_player(&mut self, location: Location) -> Option<i8> {
+    pub fn create_player(&mut self) -> Option<i8> {
         self.available_ids.pop()
-            .inspect(|id| { self.players.insert(*id, location); })
+            .inspect(|id| { self.players.insert(*id, self.default_location); })
     }
     
     /// Gets a player's location by their ID.
@@ -102,6 +143,13 @@ impl World {
     #[must_use]
     pub fn get_player(&self, id: i8) -> Option<Location> {
         self.players.get(&id).copied()
+    }
+
+    /// Gets a mutable reference to a player's location by their ID.
+    #[inline]
+    #[must_use]
+    pub fn get_player_mut(&mut self, id: i8) -> Option<&mut Location> {
+        self.players.get_mut(&id)
     }
     
     /// Removes a player from the world.

@@ -68,8 +68,10 @@ pub enum Outgoing {
     LevelInit = 0x02,
     /// Contains a chunk of level data.
     LevelDataChunk {
-        /// A chunk of the gzipped level data. May not be larger than 1024 bytes.
-        data_chunk: Vec<u8>,
+        /// How many bytes are initialized in the chunk.
+        data_length: u16,
+        /// A chunk of the gzipped level data.
+        data_chunk: Box<[u8; 1024]>,
         /// How close the level data is to being fully sent.
         percent_complete: u8
     } = 0x03,

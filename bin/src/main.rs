@@ -2,14 +2,16 @@
 
 #![doc = include_str!("../README.md")]
 
-mod networking;
+mod network;
 mod player;
+mod structs;
 
 use std::{error::Error, process::ExitCode};
 use std::collections::{HashMap, HashSet};
 use std::time::Duration;
-use oxine::server::Config;
-use crate::networking::IdleServer;
+use oxine::world::World;
+use crate::network::IdleServer;
+use crate::structs::Config;
 
 #[macro_use]
 extern crate log;
@@ -38,14 +40,16 @@ async fn main() -> ExitCode {
 /// Inner main function to easily pass back errors
 async fn inner_main() -> Result<(), Box<dyn Error>> {
     let server: IdleServer = IdleServer {
-        worlds: HashMap::default(),
+        worlds: HashMap::from([
+            ("debug".into(), World::default())
+        ]),
         config: Config {
             packet_timeout: Duration::from_secs(10),
             ping_spacing: Duration::from_millis(500),
-            default_world: String::new(),
+            default_world: "debug".into(),
             banned_ips: HashMap::default(),
             banned_users: HashMap::default(),
-            kept_salts: 12,
+            kept_salts: 0,
             name: "OxineTesting".to_string(),
             heartbeat_url: "https://www.classicube.net/server/heartbeat".into(),
             heartbeat_retries: 5,
