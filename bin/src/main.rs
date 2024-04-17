@@ -5,11 +5,12 @@
 mod network;
 mod player;
 mod structs;
+mod world;
 
 use std::{error::Error, process::ExitCode};
 use std::collections::{HashMap, HashSet};
 use std::time::Duration;
-use oxine::world::World;
+use crate::world::World;
 use crate::network::IdleServer;
 use crate::structs::Config;
 

@@ -671,12 +671,10 @@ dependencies = [
 name = "oxine"
 version = "0.1.0"
 dependencies = [
- "arrayvec",
  "base62",
  "codepage-437",
  "fixed",
  "flate2",
- "identity-hash",
  "log",
  "mint",
  "rand",
@@ -688,10 +686,13 @@ dependencies = [
 name = "oxine-bin"
 version = "0.1.0"
 dependencies = [
+ "arrayvec",
  "cfg-if",
  "flate2",
+ "identity-hash",
  "log",
  "md5",
+ "mint",
  "once_cell",
  "oxine",
  "rand",

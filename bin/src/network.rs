@@ -5,7 +5,7 @@
 use {
     crate::player::PlayerCommand,
     oxine::{
-        packets::Outgoing, server::SaltExt, world::World
+        networking::OutgoingPacketType as _, packets::Outgoing, server::SaltExt
     }, rand::{
         rngs::StdRng,
         SeedableRng
@@ -18,6 +18,8 @@ use {
         time
     }
 };
+
+use crate::world::World;
 
 use crate::structs::Config;
 
@@ -145,13 +147,16 @@ impl IdleServer {
 
                 let peer_ip = peer.ip();
 
-                let banned = {
+                let ban_reason = {
                     let conf = t!(server.config.lock());
-                    conf.banned_ips.contains_key(&peer_ip)
+                    conf.banned_ips.get(&peer_ip).map(|reason| format!("Banned: {reason}"))
                 };
 
-                if banned {
+                if let Some(reason) = ban_reason {
                     info!("Banned IP {peer_ip} attempted to join");
+                    let _ = time::timeout(config.packet_timeout, 
+                        Outgoing::Disconnect { reason }.store(&mut stream)
+                    ).await;
                     let _ = stream.shutdown().await;
                     continue;
                 }

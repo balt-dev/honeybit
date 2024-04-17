@@ -27,7 +27,7 @@ use crate::{network::{RunningServer, ServerCommand}, t};
 
 use std::sync::Mutex;
 
-use oxine::world::World;
+use crate::world::World;
 
 #[derive(Debug, Clone)]
 pub struct Player {
@@ -37,6 +37,8 @@ pub struct Player {
     pub id: Arc<AtomicI8>,
     /// A handle to the player's processing loop.
     pub handle: Sender<PlayerCommand>,
+    /// A handle to the player's block queue.
+    pub block_handle: Sender<(Vector3<u16>, u8)>,
     /// The player's username.
     pub username: Arc<Mutex<String>>,
     /// The player's location.
@@ -67,11 +69,13 @@ impl Player {
     /// Create a new empty player.
     pub fn new(server: RunningServer, writer: OwnedWriteHalf) -> Player {
         let (tx, rx) = mpsc::channel(128);
+        let (btx, brx) = mpsc::channel(256);
 
         let player = Player {
             world: Arc::new(Mutex::new(String::new())),
             id: Arc::new(AtomicI8::new(-1)),
             handle: tx,
+            block_handle: btx,
             username: Arc::new(Mutex::new(String::new())),
             location: Arc::new(Mutex::new(Location {
                 position: Vector3 { x: 0.into(), y: 0.into(), z: 0.into() },
@@ -80,13 +84,13 @@ impl Player {
             })),
         };
 
-        tokio::spawn(player.clone().start_loops(rx, server, writer));
+        tokio::spawn(player.clone().start_loops(rx, brx, server, writer));
 
         player
     }
 
     /// Start the event loop for a player. This will handle all commands recieved over the Receiver, and start a task to periodically send heartbeats.
-    pub async fn start_loops(self, mut rx: mpsc::Receiver<PlayerCommand>, server: RunningServer, writer: OwnedWriteHalf) {
+    pub async fn start_loops(self, mut rx: mpsc::Receiver<PlayerCommand>, brx: mpsc::Receiver<(Vector3<u16>, u8)>, server: RunningServer, writer: OwnedWriteHalf) {
         let (packet_timeout, ping_spacing) = {
             let config = t!(server.config.lock());
             (config.packet_timeout, config.ping_spacing)
@@ -95,6 +99,7 @@ impl Player {
         let (packet_send, packet_recv) = mpsc::channel(128);
 
         tokio::spawn(self.clone().start_packets(packet_recv, writer, packet_timeout));
+        tokio::spawn(self.clone().start_block_queue(brx, server.clone()));
         tokio::spawn(self.clone().start_heartbeat(packet_send.clone(), ping_spacing, packet_timeout));
 
         while let Some(command) = rx.recv().await {
@@ -109,12 +114,17 @@ impl Player {
                 PlayerCommand::Initialize { username } => {
                     let (name, motd, operator): (String, String, bool);
                     #[allow(clippy::assigning_clones)] // Doesn't work with non-muts
-                    {
+                    let ban_reason = {
                         let lock = t!(server.config.lock());
                         name = lock.name.clone();
                         motd = lock.motd.clone();
                         operator = lock.operators.contains(&username);
+                        lock.banned_users.get(&username).map(|reason| format!("Banned: {reason}"))
                     };
+                    if let Some(reason) = ban_reason {
+                        let _ = self.notify_disconnect(reason).await;
+                        continue;
+                    }
                     let res = packet_send.send(Outgoing::ServerIdentification {
                         version: 7,
                         name,
@@ -142,6 +152,27 @@ impl Player {
                 .and_then(convert::identity) // Flatten error (.flatten() is not stable yet)
                 else { break; };
             debug!("Sent packet {packet:?}");
+        }
+    }
+
+    /// Start the loop for placing blocks on the server.
+    async fn start_block_queue(self, mut brx: mpsc::Receiver<(Vector3<u16>, u8)>, server: RunningServer) {
+        while let Some((location, id)) = brx.recv().await {
+            let world = t!(self.world.lock()).to_owned();
+            let worlds_lock = server.worlds.lock().await;
+            let Some(world) = worlds_lock.get(&world) else {
+                let _ = self.notify_disconnect(format!("Tried to place block in nonexistent world {world}")).await;
+                break;
+            };
+            let mut world_lock = world.lock().await;
+            let Some(block) = world_lock.level_data.get_mut(location) else {
+                // Placed block out of bounds, this isn't necessarily fatal
+                continue;
+            };
+            *block = id;
+            for player in &world_lock.players {
+
+            }
         }
     }
 
@@ -219,7 +250,9 @@ impl Player {
                     }).await else { break; };
                 }
 
-                Incoming::SetBlock { position, state } => {}
+                Incoming::SetBlock { position, state } => {
+                    let Ok(()) = self.block_handle.send((position, state)).await else { break };
+                }
 
                 Incoming::SetLocation { location } => {}
 
