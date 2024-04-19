@@ -143,6 +143,8 @@ async fn inner_main(config_path: &Path) -> Result<(), Box<dyn Error>> {
         server.start().await;
         "Startup: "
     );
+
+    // TODO: Server command REPL
     
     tokio::time::sleep(Duration::MAX).await;
     

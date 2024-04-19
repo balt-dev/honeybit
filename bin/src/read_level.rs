@@ -1,16 +1,34 @@
 //! Handles the reading and writing of a level.
 
-use std::io::{self, ErrorKind, Read, Seek, SeekFrom};
+use std::io::{self, Cursor, ErrorKind, Read, Seek, SeekFrom};
 use flate2::read::GzDecoder;
+use jaded::Parser;
+use mint::Vector3;
+use oxine::packets::x16;
+
+use crate::world::LevelData;
+
+/// An instance of Java world data.
+#[derive(jaded::FromJava)]
+#[allow(non_snake_case)]
+struct JavaWorld {
+    width: i32,
+    height: i32,
+    depth: i32,
+    blocks: Vec<u8>,
+    name: String,
+    xSpawn: i32,
+    ySpawn: i32,
+    zSpawn: i32,
+    rotSpawn: f32
+}
 
 /// A holding class for a serialized level .DAT file.
 struct WorldData {
     /// The raw level data.
-    pub level_data: Vec<u8>,
-    /// The level's dimensions.
-    pub dimensions: (u16, u16, u16),
-    /// The player spawn point, in fixed point, with 5 bits after the radix point.
-    pub spawn_point: (u16, u16, u16)
+    pub level_data: LevelData,
+    /// The player spawn point.
+    pub spawn_point: Vector3<x16>
 }
 
 macro_rules! invalid {
@@ -20,8 +38,8 @@ macro_rules! invalid {
 }
 
 impl WorldData {
-    /// Load the world data from a stream.
-    pub fn load(mut stream: impl Read + Seek) -> io::Result<()> {
+    /// Load the world data from a .mine or server_level.dat file.
+    pub fn import(mut stream: impl Read + Seek) -> io::Result<()> {
         // Read the compressed data length
         let mut data_len_buf = [0; 4];
         let compressed_len = stream.seek(SeekFrom::End(-4))?;
@@ -33,17 +51,15 @@ impl WorldData {
         let mut reader = GzDecoder::new(stream.take(compressed_len));
         let mut buf = Vec::with_capacity(data_len as usize);
         reader.read_to_end(&mut buf)?;
+
+        // Find the start of the Java object
+        let start = buf.windows(2).position(|win| *win == [0xac, 0xed]).ok_or(invalid!("Could not find Java object"))?;
+        let cursor = Cursor::new(&buf[start..]);
         
-        // Skip to the coordinates
-        let coords: &[u8; 12] = buf.as_slice().get(284 .. 296)
-            .map(|slice|
-                <&[u8; 12] as TryFrom<&[u8]>>::try_from(slice)
-                    .expect("the range will always be 12 long") // This expect gets optimized out https://godbolt.org/z/jjfbfhb6W
-            ).ok_or(invalid!("coordinate slice is out of bounds"))?;
+        // Decode the Java object
+        let mut parser = Parser::new(cursor)
+            .map_err(|err| invalid!("Decoding error: {err}"))?;
+        let object: JavaWorld = parser.read_as().map_err(|err| invalid!("Parsing error: {err}"))?;
         
-        // The rest of this should probably use bytemuck
-        // See the bottom of https://wiki.vg/Classic_DAT_Format
-        
-        todo!("implement rest of decoding")
     }
 }

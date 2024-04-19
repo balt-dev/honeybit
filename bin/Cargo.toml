@@ -25,6 +25,8 @@ mint = "0.5"
 pollster = "0.3"
 chrono = "0.4"
 itertools = "0.12"
+bytemuck = "1"
+jaded = {version = "0.4", features = ["derive"]}
 
 [dependencies.uuid]
 version = "1.8.0"
