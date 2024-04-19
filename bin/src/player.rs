@@ -268,7 +268,7 @@ impl WeakPlayer {
                     }
                     ).await;
                     if let Err(e) = res {
-                        let _ = self.clone().notify_disconnect(format!("Connection failed: {e}")).await;
+                        let () = self.clone().notify_disconnect(format!("Connection failed: {e}")).await;
                     }
 
                     {
@@ -280,7 +280,7 @@ impl WeakPlayer {
                     {
                         let mut lock = server.connected_players.lock().await;
                         if lock.contains_key(&username) {
-                            let _ = self.clone().notify_disconnect("Player with same username already connected").await;
+                            let () = self.clone().notify_disconnect("Player with same username already connected").await;
                             continue;
                         }
                         lock.insert(username, self.clone());
@@ -358,7 +358,7 @@ impl WeakPlayer {
 
                         continue 'out;
                     };
-                    let _ = self.clone().notify_disconnect(disconnect_reason).await;
+                    let () = self.clone().notify_disconnect(disconnect_reason).await;
                 }
                 Command::SetBlock { location, id } => {
                     let _ = packet_send.send(
@@ -454,7 +454,7 @@ impl WeakPlayer {
         }
 
         // We timed out, shut off everything
-        let _ = self.notify_disconnect("Timed out").await;
+        let () = self.notify_disconnect("Timed out").await;
     }
 
     /// Handle the packets for a player. This will block.
@@ -470,7 +470,7 @@ impl WeakPlayer {
             let res = match Incoming::load(&mut stream).await {
                 Ok(v) => v,
                 Err(err) => {
-                    let _ = self.notify_disconnect(format!("Connection died: {err}")).await;
+                    let () = self.notify_disconnect(format!("Connection died: {err}")).await;
                     break;
                 }
             };
@@ -544,19 +544,6 @@ impl WeakPlayer {
                 }
             }
         }
-    }
-    
-    fn upgrade(&self) -> Option<Player> {
-        Some( Player {
-            world: self.world.upgrade()?,
-            id: self.id.upgrade()?,
-            handle: self.handle.upgrade()?,
-            block_handle: self.block_handle.upgrade()?,
-            username: self.username.upgrade()?,
-            location: self.location.upgrade()?,
-            connected: self.connected.upgrade()?,
-            uuid: self.uuid,
-        } )
     }
 }
 

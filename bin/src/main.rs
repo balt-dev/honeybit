@@ -7,11 +7,11 @@ mod player;
 mod structs;
 mod world;
 
-use std::{error::Error, fs, io, process::ExitCode};
+use std::{error::Error, fs, process::ExitCode};
 use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::io::ErrorKind;
-use std::time::{Duration, SystemTime};
+use std::time::{Duration};
 use chrono::Local;
 use crate::world::World;
 use crate::network::IdleServer;

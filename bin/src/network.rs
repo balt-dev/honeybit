@@ -10,7 +10,7 @@ use {
         rngs::StdRng,
         SeedableRng
     }, reqwest::StatusCode, std::{
-        collections::{HashMap, VecDeque}, io::ErrorKind, net::Ipv4Addr, sync::{atomic::Ordering, Arc}, time::Instant
+        collections::{HashMap, VecDeque}, io::ErrorKind, net::Ipv4Addr, sync::{Arc}, time::Instant
     }, tokio::{
         io::{self, AsyncWriteExt},
         net::{TcpListener, TcpStream},
@@ -115,7 +115,7 @@ impl RunningServer {
                     let lock = self.connected_players.lock().await;
                     for player in lock.values().cloned() {
                         tokio::spawn( async move {
-                            player.notify_disconnect("Server closed").await
+                            player.notify_disconnect("Server closed").await;
                         });
                     }
                     rx.close();

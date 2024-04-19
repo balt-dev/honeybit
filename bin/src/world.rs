@@ -6,9 +6,8 @@ use arrayvec::ArrayVec;
 use mint::Vector3;
 use oxine::packets::{AtomicLocation, Location, x16};
 use identity_hash::IntMap;
-use itertools::Itertools;
 use crate::player::{
-    Player, WeakPlayer,
+    WeakPlayer,
     Command
 };
 use tokio::sync::Mutex as TokioMutex;
