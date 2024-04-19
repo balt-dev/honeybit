@@ -811,6 +811,7 @@ dependencies = [
  "byteorder",
  "cfg-if",
  "chrono",
+ "codepage-437",
  "flate2",
  "identity-hash",
  "itertools",

@@ -21,6 +21,7 @@ use std::{
 use std::path::PathBuf;
 use std::sync::OnceLock;
 use chrono::Local;
+use itertools::Itertools;
 use serde::{Deserialize, Serialize};
 use simplelog::{ColorChoice, TerminalMode};
 use crate::{
@@ -82,10 +83,8 @@ async fn main() -> ExitCode {
             ColorChoice::Auto
         )
     ]).expect("no logger has been initialized yet");
-
-    let config_path = path.join("config.toml");
     
-    let res: Result<(), Box<dyn Error>> = inner_main(&config_path).await.map_err(Into::into);
+    let res: Result<(), Box<dyn Error>> = inner_main(&path).await.map_err(Into::into);
     let Err(err) = res else { return ExitCode::SUCCESS; };
     error!("~~~ ENCOUNTERED FATAL ERROR ~~~");
     error!("{err}");
@@ -108,15 +107,17 @@ macro_rules! attach_info {
 
 #[allow(unreachable_code)] // TODO
 /// Inner main function to easily pass back errors
-async fn inner_main(config_path: &Path) -> Result<(), Box<dyn Error>> {
+async fn inner_main(path: &Path) -> Result<(), Box<dyn Error>> {
     attach_info!(
-        set_up_defaults(config_path);
+        set_up_defaults(path);
         "Setting up defaults: "
     );
 
+    let config_path = path.join("config.toml");
+
     let mut config_string = String::new();
     let mut config_file = attach_info!(
-        File::open(config_path);
+        File::open(&config_path);
         "Opening config file: "
     );
     attach_info!(
@@ -128,7 +129,7 @@ async fn inner_main(config_path: &Path) -> Result<(), Box<dyn Error>> {
         Config::deserialize(toml::Deserializer::new(&config_string));
         "Deserializing config file: "
     );
-    config.path = config_path.to_path_buf();
+    config.path = config_path;
 
     let server: IdleServer = IdleServer {
         worlds: HashMap::from([
@@ -151,7 +152,11 @@ async fn inner_main(config_path: &Path) -> Result<(), Box<dyn Error>> {
     unreachable!("the program should not be running for 500 billion years")
 }
 
-fn set_up_defaults(config_path: &Path) -> Result<(), Box<dyn Error>> {
+fn set_up_defaults(path: &Path) -> Result<(), Box<dyn Error>> {
+    
+    // Set up default configuration file
+    let config_path = path.join("config.toml");
+
     if !config_path.exists() {
         let mut file = attach_info!(
             File::create(config_path);
@@ -211,6 +216,24 @@ fn set_up_defaults(config_path: &Path) -> Result<(), Box<dyn Error>> {
             "Writing default configuration: "
         );
     };
+
+    // Set up world directory
+    let world_dir = path.join("worlds");
+    if !world_dir.exists() {
+        let worlds = fs::read_dir(world_dir)?;
+        for world in worlds {
+            let world = world?;
+            let path = world.path();
+            let mut file = match File::open(&path) {
+                Ok(f) => f,
+                Err(err) => {
+                    warn!("Failed to open {}: {err}", path.display());
+                    continue;
+                }
+            };
+
+        }
+    }
 
     Ok(())
 }

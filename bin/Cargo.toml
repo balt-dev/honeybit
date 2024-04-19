@@ -28,6 +28,7 @@ chrono = "0.4"
 itertools = "0.12"
 bytemuck = "1"
 jaded = {version = "0.4", features = ["derive"]}
+codepage-437 = "0.1"
 
 [dependencies.uuid]
 version = "1.8.0"
