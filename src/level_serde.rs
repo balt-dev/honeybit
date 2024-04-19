@@ -1,4 +1,5 @@
 //! Handles the reading and writing of a level.
+#![allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
 
 use std::{io::{self, Cursor, ErrorKind, Read, Seek, SeekFrom, Write}, iter};
 use arrayvec::ArrayVec;
@@ -42,18 +43,17 @@ macro_rules! invalid {
     };
 }
 
-const MAGIC: &[u8] = b"OXINELV";
+const MAGIC: &[u8] = b"HONEYLV";
 const VERSION: u8 = 0;
 
 impl WorldData {
     /// Load world data from any supported file.
-    /// Checks for .ox files first, then .mine files.
-    /// Returns a tuple of the world data and whether it was a .ox file.
+    /// Checks for .hbit files first, then .mine files.
+    /// Returns a tuple of the world data and whether it was a .hbit file.
     /// 
     /// # Errors
     /// Errors if the stream fails to be decoded.
     pub fn guess_load(mut stream: impl Read + Seek) -> io::Result<(WorldData, bool)> {
-        let mut magic_buf = [0u8; 7];
         let mut magic_buf = [0; 7];
         stream.read_exact(&mut magic_buf)
             .map_err(|err| invalid!("Failed to read magic string: {err}"))?;
@@ -111,10 +111,10 @@ impl WorldData {
         })
     }
 
-    /// Load the world data from a .ox file.
+    /// Load the world data from a .hbit file.
     /// 
     /// The level format is as follows:
-    /// - Magic: `b"OXINELV"`
+    /// - Magic: `b"HONEYLV"`
     /// - File version: `u8`
     /// - World dimensions: `[u16; 3]`
     /// - Spawn position: `[x16; 3]`
@@ -165,9 +165,9 @@ impl WorldData {
             return Err(invalid!("Failed to read level name: name must not be larger than 64 bytes"));
         }
         let mut raw_level_name: ArrayVec<u8, 64> = iter::repeat(0).take(name_len as usize).collect();
-        (&mut stream).read_exact(&mut raw_level_name)
+        stream.read_exact(&mut raw_level_name)
             .map_err(|err| invalid!("Failed to read level name: {err}"))?;
-        let level_name = String::borrow_from_cp437(raw_level_name.as_ref(), &codepage_437::CP437_WINGDINGS);
+        let level_name = String::borrow_from_cp437(raw_level_name.as_ref(), &CP437_WINGDINGS);
 
         // Get unzipped data length
         let raw_length = stream.read_u64::<BigEndian>()
@@ -189,7 +189,7 @@ impl WorldData {
         } )
     }
 
-    /// Store the world data into a .ox file.
+    /// Store the world data into a .hbit file.
     /// See [`load`] for the level format
     /// 
     /// # Errors
