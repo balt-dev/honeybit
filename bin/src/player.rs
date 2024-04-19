@@ -129,18 +129,6 @@ pub enum Command {
 
 impl Drop for Player {
     fn drop(&mut self) {
-        if cfg!(debug_assertions) {
-            let backtrace = Backtrace::capture();
-            trace!("{}", format!("{backtrace}").lines().take(10).collect::<Vec<_>>().join("\n"));
-            trace!(
-                "dropped {} id: {}, world: {}, username: {}, location: {}",
-                    self.uuid,
-                    Arc::strong_count(&self.id),
-                    Arc::strong_count(&self.world),
-                    Arc::strong_count(&self.username),
-                    Arc::strong_count(&self.location)
-            );
-        }
         if Arc::strong_count(&self.id) == 1
             && Arc::strong_count(&self.world) == 1
             && Arc::strong_count(&self.username) == 1

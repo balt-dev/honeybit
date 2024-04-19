@@ -6,6 +6,7 @@ use arrayvec::ArrayVec;
 use mint::Vector3;
 use oxine::packets::{AtomicLocation, Location, x16};
 use identity_hash::IntMap;
+use itertools::Itertools;
 use crate::player::{
     WeakPlayer,
     Command
@@ -225,6 +226,9 @@ impl World {
                 false
             } else { true }
         });
+        if !ids.is_empty() {
+            debug!("Dropping players {:?}", ids.iter().map(ToString::to_string).intersperse(",".into()).collect::<Vec<_>>());
+        }
         for id in ids {
             self.remove_player(id);
         }
