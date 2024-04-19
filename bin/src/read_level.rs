@@ -13,6 +13,12 @@ struct WorldData {
     pub spawn_point: (u16, u16, u16)
 }
 
+macro_rules! invalid {
+    ($($f: tt)+) => {
+        io::Error::new(ErrorKind::InvalidData, format!($($f)+))
+    };
+}
+
 impl WorldData {
     /// Load the world data from a stream.
     pub fn load(mut stream: impl Read + Seek) -> Result<(), io::Error> {
@@ -27,16 +33,13 @@ impl WorldData {
         let mut reader = GzDecoder::new(stream.take(compressed_len));
         let mut buf = Vec::with_capacity(data_len as usize);
         reader.read_to_end(&mut buf)?;
-
-        // Seek to the start of the serialized data
-        let mut found = buf.windows(2)
-            .find(|b| *b == [0xAC, 0xED])
-            .ok_or(io::Error::from(ErrorKind::InvalidData))?;
-
-        // Skip the headers
-        found = &found[6..];
-
-
-        todo!("https://gist.github.com/ddevault/324122945a569a513bae")
+        
+        // Skip to the coordinates
+        let coords: &[u8; 12] = buf.as_slice().get(284 .. 296)
+            .map(|slice|
+                <&[u8; 12] as TryFrom<&[u8]>>::try_from(slice)
+                    .expect("the range will always be 12 long") // This expect gets optimized out https://godbolt.org/z/jjfbfhb6W
+            ).ok_or(invalid!("coordinate slice is out of bounds"))?;
+        
     }
 }

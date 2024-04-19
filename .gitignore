@@ -1,3 +1,4 @@
 /lib/target
 /bin/target
 /bin/logs
+/bin/config.toml
