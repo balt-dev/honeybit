@@ -6,7 +6,7 @@ mod network;
 mod player;
 mod structs;
 mod world;
-mod read_level;
+mod level_serde;
 
 use std::{
     error::Error,

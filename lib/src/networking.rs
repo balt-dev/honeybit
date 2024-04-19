@@ -3,7 +3,7 @@
 
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
-use std::io::{self, ErrorKind};
+use std::io::{self, ErrorKind, Read};
 use mint::Vector3;
 use crate::packets::*;
 use codepage_437::{BorrowFromCp437, ToCp437};
