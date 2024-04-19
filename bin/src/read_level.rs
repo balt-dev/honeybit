@@ -21,7 +21,7 @@ macro_rules! invalid {
 
 impl WorldData {
     /// Load the world data from a stream.
-    pub fn load(mut stream: impl Read + Seek) -> Result<(), io::Error> {
+    pub fn load(mut stream: impl Read + Seek) -> io::Result<()> {
         // Read the compressed data length
         let mut data_len_buf = [0; 4];
         let compressed_len = stream.seek(SeekFrom::End(-4))?;
@@ -41,5 +41,9 @@ impl WorldData {
                     .expect("the range will always be 12 long") // This expect gets optimized out https://godbolt.org/z/jjfbfhb6W
             ).ok_or(invalid!("coordinate slice is out of bounds"))?;
         
+        // The rest of this should probably use bytemuck
+        // See the bottom of https://wiki.vg/Classic_DAT_Format
+        
+        todo!("implement rest of decoding")
     }
 }

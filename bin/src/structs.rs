@@ -1,5 +1,5 @@
 use std::collections::{HashMap, HashSet};
-use std::net::IpAddr;
+use std::net::{IpAddr, Ipv4Addr};
 use std::time::Duration;
 
 mod duration_float {
@@ -23,7 +23,7 @@ mod duration_float {
         }
 
         fn visit_f64<E: Error>(self, v: f64) -> Result<Self::Value, E> {
-            (!(v.is_finite() && v > 0.0))
+            (v.is_finite() && v > 0.0)
                 .then_some(Duration::from_secs_f64(v))
                 .ok_or(E::custom("duration must be positive, non-zero, and finite"))
         }
@@ -66,8 +66,6 @@ pub struct Config {
     /// will create a situation where players will not be able to be
     /// verified! This will cause a runtime error.
     pub heartbeat_url: String,
-    /// The amount of times to retry connecting to the heartbeat server.
-    pub heartbeat_retries: usize,
     /// How often the server will send pings to the heartbeat server.
     #[serde(with = "duration_float")]
     pub heartbeat_spacing: Duration,
@@ -92,12 +90,19 @@ impl Default for Config {
             packet_timeout: Duration::from_secs(10),
             ping_spacing: Duration::from_millis(500),
             default_world: "world".into(),
-            banned_ips: HashMap::default(),
-            banned_users: HashMap::default(),
+            banned_ips: HashMap::from([
+                (IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)), "<ban reason>".into()),
+                (IpAddr::V4(Ipv4Addr::new(0, 0, 0, 1)), "<ban reason>".into()),
+                (IpAddr::V4(Ipv4Addr::new(0, 0, 0, 2)), "<ban reason>".into())
+            ]),
+            banned_users: HashMap::from([
+                ("Alice".into(), "<ban reason>".into()),
+                ("Bob".into(), "<ban reason>".into()),
+                ("Charlie".into(), "<ban reason>".into())
+            ]),
             kept_salts: 0,
             name: "<Unnamed Server>".to_string(),
-            heartbeat_url: String::new(),
-            heartbeat_retries: 5,
+            heartbeat_url: "<heartbeat URL>".into(),
             heartbeat_spacing: Duration::from_secs(5),
             heartbeat_timeout: Duration::from_secs(5),
             port: 25565,
