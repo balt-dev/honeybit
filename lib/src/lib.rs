@@ -5,5 +5,4 @@
 
 pub mod packets;
 pub mod networking;
-pub mod world;
 pub mod server;

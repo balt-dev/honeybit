@@ -1,11 +1,11 @@
 //! Holds structs for use in sending packets to and from clients.
 
+use std::sync::atomic::{AtomicU16, AtomicU8, Ordering};
 use fixed::{
     FixedI8, FixedU16,
     types::extra::U5
 };
 pub use mint::Vector3;
-use crate::world::Location;
 
 #[allow(non_camel_case_types)]
 /// Type alias for fixed point fractional i8s.
@@ -152,4 +152,66 @@ pub enum Outgoing {
         /// Whether the player is an operator or not.
         operator: bool
     } = 0x0F
+}
+
+
+/// A single player's position and rotation.
+#[derive(Copy, Clone, Ord, PartialOrd, Eq, PartialEq, Debug, Hash)]
+pub struct Location {
+    /// The player's position.
+    pub position: Vector3<x16>,
+    /// The player's yaw.
+    pub yaw: u8,
+    /// The player's pitch.
+    pub pitch: u8
+}
+
+/// A single player's position and rotation, stored to allow atomic operations.
+#[derive(Debug)]
+pub struct AtomicLocation {
+    /// The player's position.
+    pub position: Vector3<AtomicU16>,
+    /// The player's yaw.
+    pub yaw: AtomicU8,
+    /// The player's pitch.
+    pub pitch: AtomicU8
+}
+
+impl AtomicLocation {
+    /// Updates the atomic location from the location's fields.
+    pub fn update(&self, location: Location) {
+        self.position.x.store(location.position.x.to_bits(), Ordering::Relaxed);
+        self.position.y.store(location.position.y.to_bits(), Ordering::Relaxed);
+        self.position.z.store(location.position.z.to_bits(), Ordering::Relaxed);
+        self.yaw.store(location.yaw, Ordering::Relaxed);
+        self.pitch.store(location.pitch, Ordering::Relaxed);
+    }
+}
+
+impl From<&AtomicLocation> for Location {
+    fn from(value: &AtomicLocation) -> Self {
+        Location {
+            position: Vector3 {
+                x: x16::from_bits(value.position.x.load(Ordering::Relaxed)),
+                y: x16::from_bits(value.position.y.load(Ordering::Relaxed)),
+                z: x16::from_bits(value.position.z.load(Ordering::Relaxed))
+            },
+            yaw: value.yaw.load(Ordering::Relaxed),
+            pitch: value.pitch.load(Ordering::Relaxed)
+        }
+    }
+}
+
+impl From<Location> for AtomicLocation {
+    fn from(value: Location) -> Self {
+        AtomicLocation {
+            position: Vector3 {
+                x: value.position.x.to_bits().into(),
+                y: value.position.y.to_bits().into(),
+                z: value.position.z.to_bits().into(),
+            },
+            yaw: value.yaw.into(),
+            pitch: value.pitch.into()
+        }
+    }
 }

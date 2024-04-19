@@ -22,3 +22,17 @@ flate2 = "1"
 identity-hash = "0.1"
 arrayvec = "0.7"
 mint = "0.5"
+pollster = "0.3"
+chrono = "0.4"
+itertools = "0.12"
+
+[dependencies.uuid]
+version = "1.8.0"
+features = [
+    "v4",
+    "fast-rng",
+]
+
+[dependencies.parking_lot]
+version = "0.12"
+features = ["deadlock_detection", "hardware-lock-elision"]

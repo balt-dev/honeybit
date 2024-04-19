@@ -1,15 +1,13 @@
 //! Module handling the networking side of the server.
 #![allow(clippy::cast_sign_loss, clippy::cast_possible_wrap, clippy::cast_possible_truncation, clippy::wildcard_imports, async_fn_in_trait)]
 
-use tokio::io::{AsyncRead, AsyncWrite, AsyncReadExt, AsyncWriteExt};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 use std::io::{self, ErrorKind};
 use mint::Vector3;
-use crate::{
-    world::Location,
-    packets::*
-};
+use crate::packets::*;
 use codepage_437::{BorrowFromCp437, ToCp437};
+use crate::packets::Location;
 
 // I'll be real, I could've used serde for this. I just didn't want to.
 

@@ -7,9 +7,12 @@ mod player;
 mod structs;
 mod world;
 
-use std::{error::Error, process::ExitCode};
+use std::{error::Error, fs, io, process::ExitCode};
 use std::collections::{HashMap, HashSet};
-use std::time::Duration;
+use std::fs::File;
+use std::io::ErrorKind;
+use std::time::{Duration, SystemTime};
+use chrono::Local;
 use crate::world::World;
 use crate::network::IdleServer;
 use crate::structs::Config;
@@ -19,16 +22,51 @@ extern crate log;
 
 #[tokio::main]
 async fn main() -> ExitCode {
-    simplelog::TermLogger::init(
-        if cfg!(debug_assertions) {
-            simplelog::LevelFilter::Debug
-        } else {
-            simplelog::LevelFilter::Info
-        },
-        simplelog::Config::default(),
-        simplelog::TerminalMode::Mixed,
-        simplelog::ColorChoice::Auto
-    ).expect("no logger has been initialized yet");
+    let now = Local::now();
+
+    match fs::create_dir("./logs") {
+        Ok(()) => {},
+        Err(err) if err.kind() == ErrorKind::AlreadyExists => {},
+        Err(err) => {
+            eprintln!("Failed to create log directory: {err}");
+            return ExitCode::FAILURE;
+        }
+    }
+
+
+    let log_file = match File::create(format!("./logs/{}.log", now.to_rfc3339())) {
+        Ok(file) => file,
+        Err(err) => {
+            eprintln!("Failed to open log file: {err}");
+            return ExitCode::FAILURE
+        }
+    };
+
+    simplelog::CombinedLogger::init(vec![
+        simplelog::TermLogger::new(
+            if cfg!(debug_assertions) {
+                simplelog::LevelFilter::Debug
+            } else {
+                simplelog::LevelFilter::Info
+            },
+            simplelog::ConfigBuilder::default()
+                .add_filter_ignore("hyper_util".into())
+                .build(),
+            simplelog::TerminalMode::Mixed,
+            simplelog::ColorChoice::Auto
+        ),
+        simplelog::WriteLogger::new(
+            if cfg!(debug_assertions) {
+                simplelog::LevelFilter::Trace
+            } else {
+                simplelog::LevelFilter::Info
+            },
+            simplelog::ConfigBuilder::default()
+                .add_filter_ignore("hyper_util".into())
+                .build(),
+            log_file
+        )
+    ]).expect("no logger has been initialized yet");
     
     let res: Result<(), Box<dyn Error>> = inner_main().await.map_err(Into::into);
     let Err(err) = res else { return ExitCode::SUCCESS; };

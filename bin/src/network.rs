@@ -3,7 +3,7 @@
 // TODO: Refactor this to not be one giant file
 
 use {
-    crate::player::PlayerCommand,
+    crate::player::Command,
     oxine::{
         networking::OutgoingPacketType as _, packets::Outgoing, server::SaltExt
     }, rand::{
@@ -23,18 +23,10 @@ use crate::world::World;
 
 use crate::structs::Config;
 
-use std::sync::Mutex;
+use std::sync::{OnceLock};
+use parking_lot::Mutex;
 
-
-use crate::player::Player;
-
-/// Wrapper around locking to easily propagate panics
-#[macro_export]
-macro_rules! t {
-    ($e: expr) => {
-        {$e}.expect("other thread panicked")
-    };
-}
+use crate::player::{Player, WeakPlayer};
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum ServerCommand {
@@ -43,12 +35,12 @@ pub enum ServerCommand {
         /// The username of the player that sent the message.
         username: String,
         /// The message to be sent.
-        message: String
+        message: String,
     }
 }
 
 /// A server that hasn't been started yet.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub struct IdleServer {
     /// A mapping of names to worlds in the server.
     pub worlds: HashMap<String, World>,
@@ -61,35 +53,74 @@ pub struct IdleServer {
 /// Think of it like a handle.
 pub struct RunningServer {
     /// The worlds in the server.
-    pub worlds: Arc<TokioMutex<HashMap<String, Arc<TokioMutex<World>>>>>,
+    pub worlds: Arc<TokioMutex<HashMap<String, World>>>,
     /// The configuration of the server.
     pub config: Arc<Mutex<Config>>,
+    /// The default world to send players to.
+    pub default_world: World,
     /// A mapping of player names to their info.
-    pub connected_players: Arc<Mutex<HashMap<String, Player>>>,
+    pub connected_players: Arc<TokioMutex<HashMap<String, WeakPlayer>>>,
     /// A list of the last few last salts generated.
     pub last_salts: Arc<Mutex<VecDeque<String>>>,
     /// A handle to send commands to the server.
     pub commander: mpsc::Sender<ServerCommand>,
-    /// The server's current URL. Expect this to change often.
-    pub url: Arc<Mutex<String>>,
+    /// The server's URL.
+    pub url: Arc<OnceLock<String>>,
 }
 
 impl RunningServer {
-    fn new(idle: IdleServer, tx: mpsc::Sender<ServerCommand>) -> RunningServer {
-        RunningServer {
+    fn collect_garbage(&self) {
+        let Ok(mut lock) = self.connected_players.try_lock() else { return };
+        lock.retain(|_, player| !player.any_dropped());
+    }
+    
+    fn new(idle: IdleServer, tx: mpsc::Sender<ServerCommand>) -> Option<RunningServer> {
+        let default_world = &idle.config.default_world;
+        let world = idle.worlds.get(default_world).cloned()?;
+        Some(RunningServer {
             worlds: Arc::new(TokioMutex::new(
-                idle.worlds.into_iter().map(
-                    |(name, world)| { 
-                        let arc = Arc::new(TokioMutex::new(world));
-                        (name, arc)
-                    }
-                ).collect()
+                idle.worlds
             )),
+            default_world: world,
             config: Arc::new(Mutex::new(idle.config)),
-            connected_players: Arc::new(Mutex::default()),
+            connected_players: Arc::new(TokioMutex::default()),
             last_salts: Arc::new(Mutex::default()),
             commander: tx,
-            url: Arc::new(Mutex::new(String::new()))
+            url: Arc::default()
+        })
+    }
+
+    async fn start_commands(self, mut rx: mpsc::Receiver<ServerCommand>) {
+        while let Some(command) = rx.recv().await {
+            match command {
+                ServerCommand::SendMessage {
+                    message, username
+                } => {
+                    let lock = self.connected_players.lock().await;
+                    // If left with an & prefix, clients will crash
+                    let message = message.strip_suffix('&').unwrap_or(&message);
+                    
+                    for player in lock.values() {
+                        let username = username.clone();
+                        let message = message.to_owned();
+                        let Some(handle) = player.handle.clone().upgrade() else { continue };
+                        tokio::spawn( async move {
+                            let _ = handle.send(Command::Message {
+                                username, message
+                            }).await;
+                        });
+                    }
+                },
+                ServerCommand::Stop => {
+                    let lock = self.connected_players.lock().await;
+                    for player in lock.values().cloned() {
+                        tokio::spawn( async move {
+                            player.notify_disconnect("Server closed").await
+                        });
+                    }
+                    rx.close();
+                }
+            }
         }
     }
 }
@@ -101,7 +132,7 @@ impl IdleServer {
     /// Errors if the server fails to establish a TCP connection to the configured server port.
     pub async fn start(self) -> io::Result<RunningServer> {
         info!("Starting server...");
-        let (server_tx, _server_rx) =
+        let (server_tx, server_rx) =
             mpsc::channel::<ServerCommand>(100);
 
         let listener = TcpListener::bind((
@@ -112,10 +143,12 @@ impl IdleServer {
 
         let config = self.config.clone();
 
-        let server = RunningServer::new(
+        let Some(server) = RunningServer::new(
             self,
             server_tx.clone()
-        );
+        ) else {
+            return Err(io::Error::new(ErrorKind::InvalidInput, "Default world does not exist"))
+        };
 
         let len = config.heartbeat_url.len();
         if len > 0 {
@@ -123,13 +156,18 @@ impl IdleServer {
         } else if config.kept_salts > 0 {
             return Err(io::Error::new(ErrorKind::InvalidInput, "Cannot verify players if heartbeat URL is unset"))
         }
+        
+        let cmd_server = server.clone();
 
+        let _commands = tokio::spawn(cmd_server.start_commands(server_rx));
+        
         let conn_server = server.clone();
-
-        let server_task = tokio::spawn(async move {
+        
+        let _server_task = tokio::spawn(async move {
             let server = conn_server;
             loop {
                 info!("Waiting for connection...");
+                server.collect_garbage();
                 let connection = listener.accept().await;
 
                 let Ok((mut stream, _)) = connection else {
@@ -148,7 +186,7 @@ impl IdleServer {
                 let peer_ip = peer.ip();
 
                 let ban_reason = {
-                    let conf = t!(server.config.lock());
+                    let conf = server.config.lock();
                     conf.banned_ips.get(&peer_ip).map(|reason| format!("Banned: {reason}"))
                 };
 
@@ -181,12 +219,11 @@ impl RunningServer {
     /// 
     /// # Errors
     /// Returns an error if the player failed to be notified that it was disconnected.
-    pub async fn disconnect(&mut self, username: impl AsRef<str>, reason: impl Into<String>) -> Result<(), mpsc::error::SendError<PlayerCommand>> {
-        let mut lock = t!(self.connected_players.lock());
+    pub async fn disconnect(&mut self, username: impl AsRef<str>, reason: impl Into<String>) {
+        let mut lock = self.connected_players.lock().await;
         if let Some(player) = lock.remove(username.as_ref()) {
-            player.notify_disconnect(reason).await?;
+            player.notify_disconnect(reason).await;
         }
-        Ok(())
     }
 
     /// Starts the heartbeat pings. This will block.
@@ -198,7 +235,7 @@ impl RunningServer {
         loop {
             let now = Instant::now();
             let user_count = {
-                let lock = t!(self.connected_players.lock());
+                let lock = self.connected_players.lock().await;
                 lock.len()
             };
 
@@ -209,8 +246,9 @@ impl RunningServer {
                 spacing, timeout, url,
                 kept_salts
             );
+            #[allow(clippy::assigning_clones)]
             {
-                let lock = t!(self.config.lock());
+                let lock = self.config.lock();
                 spacing = lock.heartbeat_spacing;
                 timeout = lock.heartbeat_timeout;
                 url = lock.heartbeat_url.clone();
@@ -224,7 +262,7 @@ impl RunningServer {
             let wait_until = now + spacing;
 
             let salt = {
-                let mut lock = t!(self.last_salts.lock());
+                let mut lock = self.last_salts.lock();
                 if kept_salts == 0 {
                     "0".into() // no salt to be found
                 } else {
@@ -262,7 +300,7 @@ impl RunningServer {
                     }
                 };
 
-                debug!("Sending heartbeat with URL {}", request.url());
+                trace!("Sending heartbeat with URL {}", request.url());
 
                 let res = time::timeout(timeout, http.execute(request)).await;
 
@@ -288,7 +326,7 @@ impl RunningServer {
                             break 'b;
                         };
                         
-                        debug!("Successfully got response of {response:?}");
+                        trace!("Successfully got response of {response:?}");
                         
                         if response.status != "success" {
                             // The ping failed, we warn and stop
@@ -313,9 +351,9 @@ impl RunningServer {
 
                         let url = response.response;
 
-                        debug!("New url: {url}");
+                        trace!("New url: {url}");
 
-                        *t!(self.url.lock()) = url;
+                        self.url.get_or_init(|| url);
                     },
                     Ok(Err(err)) => {
                         warn!("Failed to send heartbeat ping: {err}");
@@ -336,123 +374,7 @@ impl RunningServer {
         let (reader, writer) = tcp_stream.into_split();
         
         let player = Player::new(self.clone(), writer);
-        
-        let default_world = {
-            let lock = t!(self.config.lock());
-            lock.default_world.clone()
-        };
-        
-        let handle = player.handle.clone();
-        
-        // This won't be ready yet, so we start a task to send it when it is
-        tokio::spawn(async move {
-            let _ = handle.send(
-                PlayerCommand::SendTo {
-                world: default_world
-            }).await;
-        });
 
-        player.handle_packets(reader, self).await;
+        player.downgrade().handle_packets(reader, self).await;
     }
 }
-
-/*
-/// Handle a single connection to the server. This is long-running!
-async fn handle_stream(config: Config, server: Arc<RwLock<Server>>, stream: TcpStream) {
-    let (tx, mut rx) = mpsc::channel::<Outgoing>(100);
-    let htx = tx.clone();
-    let (mut read, mut write) = stream.into_split();
-    
-    let player_name = Arc::new(OnceLock::new());
-
-    let recv_server = server.clone();
-    let recv_name = player_name.clone();
-
-    let send_task: JoinHandle<()> = tokio::spawn(async move {
-        while !tx.is_closed() {
-
-            let res = Incoming::load(&mut read).await;
-            // Using a match instead of .map_err since I need to break
-            let res = match res {
-                Ok(packet) => packet,
-                Err(e) => {
-                    let _ = tx.send(Outgoing::Disconnect {
-                        reason: format!("Connection error: {e}")
-                    }).await;
-
-                    break;
-                }
-            };
-            match res {
-                Incoming::PlayerIdentification { version, username, key } => {
-                    if version != 0x07 {
-                        let _ = tx.send(Outgoing::Disconnect {
-                            reason: format!("Failed to connect: Incorrect protocol version 0x{version:02x}")
-                        }).await;
-                        break;
-                    }
-                    
-                    let verified = {
-                        let server = server.read().expect("other thread panicked");
-
-                        server.last_salts.is_empty() || {
-                            let mut res = false;
-                            for salt in &server.last_salts {
-                                let server_key = md5::compute(salt.to_owned() + &username);
-                                if *server_key == key.as_bytes() {
-                                    res = true;
-                                    break;
-                                }
-                            }
-                            res
-                        }
-                    };
-                    
-                    if !verified {
-                        let _ = tx.send(Outgoing::Disconnect {
-                            reason: "Failed to connect: Unauthorized".to_string()
-                        }).await;
-                        break;
-                    }
-                    
-                    let _ = player_name.set(username);
-                }
-                Incoming::SetBlock { position, state } => {
-                    let lock = server.write().expect("other thread panicked");
-                    // Get the world that the player is in
-                    let Some((world, id)) = player_name.get().and_then(
-                        |name| lock.players_connected.get(name).cloned()
-                    ) else { continue /* We aren't ready to recieve these yet */ };
-                    
-                }
-                Incoming::SetLocation { location } => {
-
-                }
-                Incoming::Message { message } => {
-
-                }
-            }
-        }
-    });
-    
-    let heartbeat_task: JoinHandle<()> = tokio::spawn(async move {
-        while !htx.is_closed() {
-            let next_wakeup = Instant::now() + config.ping_spacing;
-            if time::timeout(config.packet_timeout, htx.send(Outgoing::Ping)).await.is_err() {
-                // Heartbeat timed out, we disconnect
-                let _ = htx.send(
-                    Outgoing::Disconnect {reason: "Connection timed out".to_string() }
-                ).await;
-                break;
-            }
-            time::sleep_until(next_wakeup).await;
-        }
-    });
-
-    let (recv, send, heart) = join!(recv_task, send_task, heartbeat_task);
-    
-    let _ = recv.inspect_err(|err| error!("Recieving task panicked: {err}"));
-    let _ = send.inspect_err(|err| error!("Sending task panicked: {err}"));
-    let _ = heart.inspect_err(|err| error!("Heartbeat task panicked: {err}"));
-}
-*/
