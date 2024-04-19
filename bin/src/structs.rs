@@ -1,5 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::net::{IpAddr, Ipv4Addr};
+use std::path::PathBuf;
 use std::time::Duration;
 
 mod duration_float {
@@ -38,6 +39,8 @@ mod duration_float {
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[derive(serde::Serialize, serde::Deserialize)]
 pub struct Config {
+    #[serde(skip)]
+    pub(crate) path: PathBuf,
     /// How long the server will wait for a client to respond to a ping.
     #[serde(with = "duration_float")]
     pub packet_timeout: Duration,
@@ -87,6 +90,7 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Config {
+            path: PathBuf::default(),
             packet_timeout: Duration::from_secs(10),
             ping_spacing: Duration::from_millis(500),
             default_world: "world".into(),

@@ -11,14 +11,15 @@ mod read_level;
 use std::{
     error::Error,
     fs,
-    io,
     process::ExitCode,
-    collections::{HashMap, HashSet},
+    collections::HashMap,
     fs::File,
     io::{ErrorKind, Read, Seek, SeekFrom, Write},
     path::Path,
     time::{Duration}
 };
+use std::path::PathBuf;
+use std::sync::OnceLock;
 use chrono::Local;
 use serde::{Deserialize, Serialize};
 use simplelog::{ColorChoice, TerminalMode};
@@ -33,22 +34,31 @@ extern crate log;
 
 #[tokio::main]
 async fn main() -> ExitCode {
+    let Ok(path) = std::env::current_exe() else {
+        eprintln!("Failed to get current path");
+        return ExitCode::FAILURE;
+    };
+    let path = path.parent().expect("executable path always has a parent");
+    
     let now = Local::now();
 
-    match fs::create_dir("./logs") {
+    let logs_path = path.join("logs");
+    
+    match fs::create_dir(&logs_path) {
         Ok(()) => {},
         Err(err) if err.kind() == ErrorKind::AlreadyExists => {},
         Err(err) => {
-            eprintln!("Failed to create log directory: {err}");
+            eprintln!("Failed to create log directory at {}: {err}", logs_path.display());
             return ExitCode::FAILURE;
         }
     }
 
-
-    let log_file = match File::create(format!("./logs/{}.log", now.to_rfc3339())) {
+    let log_path = logs_path.join(format!("{}.log", now.to_rfc3339()));
+    
+    let log_file = match File::create(&log_path) {
         Ok(file) => file,
         Err(err) => {
-            eprintln!("Failed to open log file: {err}");
+            eprintln!("Failed to open log file at {}: {err}", log_path.display());
             return ExitCode::FAILURE
         }
     };
@@ -72,25 +82,54 @@ async fn main() -> ExitCode {
             ColorChoice::Auto
         )
     ]).expect("no logger has been initialized yet");
+
+    let config_path = path.join("config.toml");
     
-    let res: Result<(), Box<dyn Error>> = inner_main().await.map_err(Into::into);
+    let res: Result<(), Box<dyn Error>> = inner_main(&config_path).await.map_err(Into::into);
     let Err(err) = res else { return ExitCode::SUCCESS; };
     error!("~~~ ENCOUNTERED FATAL ERROR ~~~");
     error!("{err}");
     ExitCode::FAILURE
 }
 
+macro_rules! attach_info {
+    ($err: expr; $msg: literal) => {
+        {
+            let v = {$err};
+            if let Err(ref err) = v {
+                let f = format!("{err}");
+                Err(String::from($msg) + &f)?;
+            }
+            let Ok(v) = v else { unreachable!() };
+            v
+        }
+    };
+}
+
 #[allow(unreachable_code)] // TODO
 /// Inner main function to easily pass back errors
-async fn inner_main() -> Result<(), Box<dyn Error>> {
-    set_up_defaults()?;
-    
+async fn inner_main(config_path: &Path) -> Result<(), Box<dyn Error>> {
+    attach_info!(
+        set_up_defaults(config_path);
+        "Setting up defaults: "
+    );
+
     let mut config_string = String::new();
-    let mut config_file = File::open("./config.toml")?;
-    config_file.read_to_string(&mut config_string)?;
-    
-    let config = Config::deserialize(toml::Deserializer::new(&config_string))?;
-    
+    let mut config_file = attach_info!(
+        File::open(config_path);
+        "Opening config file: "
+    );
+    attach_info!(
+        config_file.read_to_string(&mut config_string);
+        "Reading config file: "
+    );
+
+    let mut config = attach_info!(
+        Config::deserialize(toml::Deserializer::new(&config_string));
+        "Deserializing config file: "
+    );
+    config.path = config_path.to_path_buf();
+
     let server: IdleServer = IdleServer {
         worlds: HashMap::from([
             ("debug".into(), World::default()),
@@ -100,19 +139,28 @@ async fn inner_main() -> Result<(), Box<dyn Error>> {
         config,
     };
     
-    let handle = server.start().await?;
+    let handle = attach_info!(
+        server.start().await;
+        "Startup: "
+    );
     
     tokio::time::sleep(Duration::MAX).await;
     
     unreachable!("the program should not be running for 500 billion years")
 }
 
-fn set_up_defaults() -> Result<(), Box<dyn Error>> {
-    if !Path::new("./config.toml").exists() {
-        let mut file = File::create("./config.toml")?;
+fn set_up_defaults(config_path: &Path) -> Result<(), Box<dyn Error>> {
+    if !config_path.exists() {
+        let mut file = attach_info!(
+            File::create(config_path);
+            "Creating config file: "
+        );
 
         let mut buf = String::new();
-        Config::default().serialize(toml::Serializer::pretty(&mut buf))?;
+        attach_info!(
+            Config::default().serialize(toml::Serializer::pretty(&mut buf));
+            "Serializing default configuration: "
+        );
         // Insert documentation to the config file
         let comment_map = [
             ("packet_timeout", "How long the server should wait before disconnecting a player, in seconds."),
@@ -131,9 +179,9 @@ fn set_up_defaults() -> Result<(), Box<dyn Error>> {
             ("[banned_ips]", "A mapping of IPs to ban reasons."),
             ("[banned_users]", "A mapping of usernames to ban reasons."),
         ];
-        
+
         let mut concat = Vec::new();
-        
+
         for line in buf.lines() {
             let mut commented = false;
             for (prefix, comment) in comment_map {
@@ -153,11 +201,14 @@ fn set_up_defaults() -> Result<(), Box<dyn Error>> {
                 concat.push("\n");
             }
         }
-        
+
         let concatenated = concat.join("");
-        
-        file.write_all(concatenated.as_bytes())?;
+
+        attach_info!(
+            file.write_all(concatenated.as_bytes());
+            "Writing default configuration: "
+        );
     };
-    
+
     Ok(())
 }
