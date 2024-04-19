@@ -229,6 +229,7 @@ impl World {
         if !ids.is_empty() {
             debug!("Dropping players {:?}", ids.iter().map(ToString::to_string).intersperse(",".into()).collect::<Vec<_>>());
         }
+        drop(lock);
         for id in ids {
             self.remove_player(id);
         }

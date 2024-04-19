@@ -6,16 +6,27 @@ mod network;
 mod player;
 mod structs;
 mod world;
+mod read_level;
 
-use std::{error::Error, fs, process::ExitCode};
-use std::collections::{HashMap, HashSet};
-use std::fs::File;
-use std::io::ErrorKind;
-use std::time::{Duration};
+use std::{
+    error::Error,
+    fs,
+    io,
+    process::ExitCode,
+    collections::{HashMap, HashSet},
+    fs::File,
+    io::{ErrorKind, Read, Seek, SeekFrom, Write},
+    path::Path,
+    time::{Duration}
+};
 use chrono::Local;
-use crate::world::World;
-use crate::network::IdleServer;
-use crate::structs::Config;
+use serde::{Deserialize, Serialize};
+use simplelog::{ColorChoice, TerminalMode};
+use crate::{
+    world::World,
+    network::IdleServer,
+    structs::Config
+};
 
 #[macro_use]
 extern crate log;
@@ -43,18 +54,6 @@ async fn main() -> ExitCode {
     };
 
     simplelog::CombinedLogger::init(vec![
-        simplelog::TermLogger::new(
-            if cfg!(debug_assertions) {
-                simplelog::LevelFilter::Debug
-            } else {
-                simplelog::LevelFilter::Info
-            },
-            simplelog::ConfigBuilder::default()
-                .add_filter_ignore("hyper_util".into())
-                .build(),
-            simplelog::TerminalMode::Mixed,
-            simplelog::ColorChoice::Auto
-        ),
         simplelog::WriteLogger::new(
             if cfg!(debug_assertions) {
                 simplelog::LevelFilter::Trace
@@ -65,6 +64,12 @@ async fn main() -> ExitCode {
                 .add_filter_ignore("hyper_util".into())
                 .build(),
             log_file
+        ),
+        simplelog::TermLogger::new(
+            simplelog::LevelFilter::Error,
+            simplelog::Config::default(),
+            TerminalMode::Stderr,
+            ColorChoice::Auto
         )
     ]).expect("no logger has been initialized yet");
     
@@ -78,28 +83,20 @@ async fn main() -> ExitCode {
 #[allow(unreachable_code)] // TODO
 /// Inner main function to easily pass back errors
 async fn inner_main() -> Result<(), Box<dyn Error>> {
+    set_up_defaults()?;
+    
+    let mut config_string = String::new();
+    config_file.read_to_string(&mut config_string)?;
+    
+    let config = Config::deserialize(toml::Deserializer::new(&config_string))?;
+    
     let server: IdleServer = IdleServer {
         worlds: HashMap::from([
-            ("debug".into(), World::default())
+            ("debug".into(), World::default()),
+            ("debug2".into(), World::default()),
+            ("debug3".into(), World::default())
         ]),
-        config: Config {
-            packet_timeout: Duration::from_secs(10),
-            ping_spacing: Duration::from_millis(500),
-            default_world: "debug".into(),
-            banned_ips: HashMap::default(),
-            banned_users: HashMap::default(),
-            kept_salts: 0,
-            name: "OxineTesting".to_string(),
-            heartbeat_url: "https://www.classicube.net/server/heartbeat".into(),
-            heartbeat_retries: 5,
-            heartbeat_spacing: Duration::from_secs(5),
-            heartbeat_timeout: Duration::from_secs(5),
-            port: 25565,
-            max_players: 64,
-            public: false,
-            operators: HashSet::new(),
-            motd: "Oxine MOTD".into(),
-        },
+        config,
     };
     
     let handle = server.start().await?;
@@ -107,4 +104,16 @@ async fn inner_main() -> Result<(), Box<dyn Error>> {
     tokio::time::sleep(Duration::MAX).await;
     
     unreachable!("the program should not be running for 500 billion years")
+}
+
+fn set_up_defaults() -> io::Result<()> {
+    if !Path::new("./config.toml").exists() {
+            let mut file = File::create("./config.toml")?;
+
+            let mut buf = String::new();
+            Config::default().serialize(toml::Serializer::pretty(&mut buf))?;
+            file.write_all(buf.as_bytes())?;
+    };
+    
+    Ok(())
 }

@@ -375,6 +375,12 @@ impl RunningServer {
         
         let player = Player::new(self.clone(), writer);
 
-        player.downgrade().handle_packets(reader, self).await;
+        player.downgrade().handle_packets(reader, self.clone()).await;
+
+        // Do this here since garbage collection needs to happen _after_ the player's dropped
+        let world = player.world.lock().clone();
+        drop(player);
+        world.collect_garbage();
+        self.collect_garbage();
     }
 }

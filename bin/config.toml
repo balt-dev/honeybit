@@ -1,0 +1,30 @@
+default_world = "world"
+operators = []
+kept_salts = 0
+name = "<Unnamed Server>"
+heartbeat_url = ""
+heartbeat_retries = 5
+port = 25565
+max_players = 64
+public = false
+motd = "Running on Oxine"
+
+[packet_timeout]
+secs = 10
+nanos = 0
+
+[ping_spacing]
+secs = 0
+nanos = 500000000
+
+[banned_ips]
+
+[banned_users]
+
+[heartbeat_spacing]
+secs = 5
+nanos = 0
+
+[heartbeat_timeout]
+secs = 5
+nanos = 0

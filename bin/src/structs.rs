@@ -49,3 +49,26 @@ pub struct Config {
     /// The server's MOTD.
     pub motd: String
 }
+
+impl Default for Config {
+    fn default() -> Self {
+        Config {
+            packet_timeout: Duration::from_secs(10),
+            ping_spacing: Duration::from_millis(500),
+            default_world: "world".into(),
+            banned_ips: HashMap::default(),
+            banned_users: HashMap::default(),
+            kept_salts: 0,
+            name: "<Unnamed Server>".to_string(),
+            heartbeat_url: String::new(),
+            heartbeat_retries: 5,
+            heartbeat_spacing: Duration::from_secs(5),
+            heartbeat_timeout: Duration::from_secs(5),
+            port: 25565,
+            max_players: 64,
+            public: false,
+            operators: HashSet::new(),
+            motd: "Running on Oxine".into(),
+        }
+    }
+}
