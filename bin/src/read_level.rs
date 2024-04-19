@@ -61,5 +61,18 @@ impl WorldData {
             .map_err(|err| invalid!("Decoding error: {err}"))?;
         let object: JavaWorld = parser.read_as().map_err(|err| invalid!("Parsing error: {err}"))?;
         
+        /*
+        (object.width, object.height, object.depth, object.blocks.len(), object.name, object.xSpawn, object.ySpawn, object.zSpawn, object.rotSpawn) = (
+            256,
+            256,
+            64,
+            4194304,
+            "A Nice World",
+            150,
+            34,
+            158,
+            0.0,
+        )
+ */
     }
 }
