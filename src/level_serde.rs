@@ -6,7 +6,7 @@ use codepage_437::{BorrowFromCp437, ToCp437, CP437_WINGDINGS};
 use flate2::{read::GzDecoder, write::GzEncoder, Compression};
 use jaded::Parser;
 use mint::Vector3;
-use oxine::packets::{x16, Location};
+use crate::packets::{x16, Location};
 use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
 
 use crate::world::LevelData;
@@ -27,7 +27,7 @@ struct JavaWorld {
 }
 
 /// A holding class for a serialized level .DAT file.
-struct WorldData {
+pub struct WorldData {
     /// The raw level data.
     pub level_data: LevelData,
     /// The player spawn point.

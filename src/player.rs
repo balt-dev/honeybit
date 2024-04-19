@@ -8,36 +8,34 @@ use std::{
     },
     time::Duration,
     io::{Cursor, Write},
+    sync::atomic::AtomicBool,
+    sync::Weak
 };
-use std::backtrace::Backtrace;
-use std::sync::atomic::AtomicBool;
-use std::sync::Weak;
 use pollster::FutureExt as _;
 use flate2::{
     Compression,
     read::GzEncoder
 };
-use oxine::{
-    networking::{IncomingPacketType as _, OutgoingPacketType},
-    packets::{Incoming, Outgoing, Vector3},
-    packets::Location
-};
-use tokio::{
-    net::tcp::{OwnedReadHalf, OwnedWriteHalf},
-    sync::{
-        mpsc::{self, Sender}
-    },
-    time
-};
-use tokio::sync::mpsc::WeakSender;
-use oxine::packets::AtomicLocation;
-use uuid::Uuid;
-use parking_lot::Mutex;
-
 use crate::{
+    packets::{
+        IncomingPacketType as _,
+        OutgoingPacketType as _,
+        Incoming,
+        Outgoing,
+        Vector3,
+        Location
+    },
+    packets::AtomicLocation,
     network::{RunningServer, ServerCommand},
     world::World
 };
+use tokio::{
+    net::tcp::{OwnedReadHalf, OwnedWriteHalf},
+    sync::mpsc::{self, Receiver, Sender, WeakSender},
+    time,
+};
+use uuid::Uuid;
+use parking_lot::Mutex;
 
 #[derive(Debug)]
 pub struct Player {
@@ -152,7 +150,7 @@ impl Player {
         let (btx, brx) = mpsc::channel(256);
 
         let player = Player {
-            world: Arc::new(Mutex::new(World::empty())),
+            world: Arc::default(),
             id: Arc::new(AtomicI8::new(-1)),
             handle: tx,
             block_handle: btx,
@@ -197,7 +195,7 @@ impl WeakPlayer {
 
     /// Start the event loop for a player. This will handle all commands recieved over the Receiver, and start a task to periodically send heartbeats.
     #[allow(clippy::too_many_lines)]
-    pub async fn start_loops(self, mut rx: mpsc::Receiver<Command>, brx: mpsc::Receiver<(Vector3<u16>, u8)>, server: RunningServer, writer: OwnedWriteHalf) {
+    pub async fn start_loops(self, mut rx: Receiver<Command>, brx: Receiver<(Vector3<u16>, u8)>, server: RunningServer, writer: OwnedWriteHalf) {
 
         let (packet_timeout, ping_spacing) = {
             let config = server.config.lock();
@@ -397,7 +395,7 @@ impl WeakPlayer {
     }
 
     /// Start the loop for sending packets to the client.
-    async fn start_packets(self, mut recv: mpsc::Receiver<Outgoing>, mut writer: OwnedWriteHalf, timeout: Duration) {
+    async fn start_packets(self, mut recv: Receiver<Outgoing>, mut writer: OwnedWriteHalf, timeout: Duration) {
         while let Some(packet) = recv.recv().await {
             trace!("Sending packet...");
             let Ok(()) = time::timeout(timeout, packet.store(&mut writer))
@@ -410,7 +408,7 @@ impl WeakPlayer {
     }
 
     /// Start the loop for placing blocks on the server.
-    async fn start_block_queue(self, mut brx: mpsc::Receiver<(Vector3<u16>, u8)>) {
+    async fn start_block_queue(self, mut brx: Receiver<(Vector3<u16>, u8)>) {
         'o: while let Some((location, id)) = brx.recv().await {
             if !gb!(&self.connected).load(Ordering::Relaxed) {
                 break;

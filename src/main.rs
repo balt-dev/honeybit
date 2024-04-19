@@ -7,6 +7,7 @@ mod player;
 mod structs;
 mod world;
 mod level_serde;
+mod packets;
 
 use std::{
     error::Error,
@@ -18,6 +19,7 @@ use std::{
     path::Path,
     time::{Duration}
 };
+use std::ffi::OsStr;
 use std::path::PathBuf;
 use std::sync::OnceLock;
 use chrono::Local;
@@ -29,6 +31,7 @@ use crate::{
     network::IdleServer,
     structs::Config
 };
+use crate::level_serde::WorldData;
 
 #[macro_use]
 extern crate log;
@@ -43,7 +46,7 @@ async fn main() -> ExitCode {
     
     let now = Local::now();
 
-    let logs_path = path.join("logs");
+    let logs_path = path.join("../bin/logs");
     
     match fs::create_dir(&logs_path) {
         Ok(()) => {},
@@ -91,58 +94,60 @@ async fn main() -> ExitCode {
     ExitCode::FAILURE
 }
 
-macro_rules! attach_info {
-    ($err: expr; $msg: literal) => {
-        {
-            let v = {$err};
-            if let Err(ref err) = v {
-                let f = format!("{err}");
-                Err(String::from($msg) + &f)?;
+macro_rules! try_with_context {
+    ($err: expr; $t: ident $msg: literal $(; $($fmt: expr),+)?) => {
+        match {$err} {
+            Ok(v) => v,
+            Err(ref err) => {
+                try_with_context!(;$t $msg err $($($fmt),+)?);
             }
-            let Ok(v) = v else { unreachable!() };
-            v
         }
     };
+    (;error $msg: literal $err: ident $($($fmt: expr),+)?) => {
+        Err(format!($msg, $err $(,$($fmt),+)?))?;
+        unreachable!()
+    };
+    (;warn $msg: literal $err: ident $($($fmt: expr),+)?) => {
+        warn!($msg, $err $(, $($fmt),+)?);
+        continue;
+    }
 }
 
-#[allow(unreachable_code)] // TODO
 /// Inner main function to easily pass back errors
 async fn inner_main(path: &Path) -> Result<(), Box<dyn Error>> {
-    attach_info!(
+    try_with_context!(
         set_up_defaults(path);
-        "Setting up defaults: "
+        error "Setting up defaults: {}"
     );
 
     let config_path = path.join("config.toml");
 
     let mut config_string = String::new();
-    let mut config_file = attach_info!(
+    let mut config_file = try_with_context!(
         File::open(&config_path);
-        "Opening config file: "
+        error "Opening config file: {}"
     );
-    attach_info!(
+    try_with_context!(
         config_file.read_to_string(&mut config_string);
-        "Reading config file: "
+        error "Reading config file: {}"
     );
 
-    let mut config = attach_info!(
+    let mut config = try_with_context!(
         Config::deserialize(toml::Deserializer::new(&config_string));
-        "Deserializing config file: "
+        error "Deserializing config file: {}"
     );
     config.path = config_path;
 
+    let worlds = load_worlds(path)?;
+    
     let server: IdleServer = IdleServer {
-        worlds: HashMap::from([
-            ("debug".into(), World::default()),
-            ("debug2".into(), World::default()),
-            ("debug3".into(), World::default())
-        ]),
+        worlds,
         config,
     };
     
-    let handle = attach_info!(
+    let handle = try_with_context!(
         server.start().await;
-        "Startup: "
+        error "Startup: {}"
     );
 
     // TODO: Server command REPL
@@ -152,21 +157,73 @@ async fn inner_main(path: &Path) -> Result<(), Box<dyn Error>> {
     unreachable!("the program should not be running for 500 billion years")
 }
 
-fn set_up_defaults(path: &Path) -> Result<(), Box<dyn Error>> {
+fn load_worlds(path: &Path) -> Result<HashMap<String, World>, Box<dyn Error>> {
+    let world_dir = path.join("worlds");
     
+    let worlds = try_with_context!(
+        fs::read_dir(world_dir);
+        error "Failed to open worlds directory: {}"
+    );
+    
+    for world in worlds {
+        let world = try_with_context!(world; error "Failed to read worlds directory: {}");
+        let path = world.path();
+
+        // For windows users
+        if path.file_name() == Some(OsStr::new("desktop.ini")) { continue }
+
+        let file = try_with_context!(
+                File::open(&path);
+                warn "Failed to open {}: {}"; path.display()
+            );
+
+        let world_data = try_with_context!(
+                WorldData::load(file); 
+                warn "Failed to parse {}: {}\n"; path.display()
+            );
+
+        let world = World::from(world_data);
+    }
+    
+    todo!()
+}
+
+fn set_up_defaults(path: &Path) -> Result<(), Box<dyn Error>> {
+
     // Set up default configuration file
+    make_config(path)?;
+
+    // Set up world directory
+    make_worlds(path)?;
+
+    Ok(())
+}
+
+fn make_worlds(path: &Path) -> Result<(), Box<dyn Error>> {
+    let world_dir = path.join("worlds");
+    if !world_dir.exists() {
+        try_with_context!(
+            fs::create_dir(world_dir);
+            error "Creating worlds directory: {}"
+        );
+        // Load default world into it
+    }
+    Ok(())
+}
+
+fn make_config(path: &Path) -> Result<(), Box<dyn Error>> {
     let config_path = path.join("config.toml");
 
     if !config_path.exists() {
-        let mut file = attach_info!(
+        let mut file = try_with_context!(
             File::create(config_path);
-            "Creating config file: "
+            error "Creating config file: {}"
         );
 
         let mut buf = String::new();
-        attach_info!(
+        try_with_context!(
             Config::default().serialize(toml::Serializer::pretty(&mut buf));
-            "Serializing default configuration: "
+            error "Serializing default configuration: {}"
         );
         // Insert documentation to the config file
         let comment_map = [
@@ -211,29 +268,10 @@ fn set_up_defaults(path: &Path) -> Result<(), Box<dyn Error>> {
 
         let concatenated = concat.join("");
 
-        attach_info!(
+        try_with_context!(
             file.write_all(concatenated.as_bytes());
-            "Writing default configuration: "
+            error "Writing default configuration: {}"
         );
     };
-
-    // Set up world directory
-    let world_dir = path.join("worlds");
-    if !world_dir.exists() {
-        let worlds = fs::read_dir(world_dir)?;
-        for world in worlds {
-            let world = world?;
-            let path = world.path();
-            let mut file = match File::open(&path) {
-                Ok(f) => f,
-                Err(err) => {
-                    warn!("Failed to open {}: {err}", path.display());
-                    continue;
-                }
-            };
-
-        }
-    }
-
     Ok(())
 }

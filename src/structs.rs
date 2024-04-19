@@ -113,7 +113,7 @@ impl Default for Config {
             max_players: 64,
             public: false,
             operators: HashSet::new(),
-            motd: "Running on Oxine".into(),
+            motd: "Running on Honeybit".into(),
         }
     }
 }

@@ -402,6 +402,38 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d231dfb89cfffdbc30e7fc41579ed6066ad03abda9e567ccafae602b97ec5024"
 
 [[package]]
+name = "honeybit"
+version = "0.1.0"
+dependencies = [
+ "arrayvec",
+ "base62",
+ "bytemuck",
+ "byteorder",
+ "cfg-if",
+ "chrono",
+ "codepage-437",
+ "fixed",
+ "flate2",
+ "identity-hash",
+ "itertools",
+ "jaded",
+ "log",
+ "md5",
+ "mint",
+ "once_cell",
+ "parking_lot",
+ "pollster",
+ "rand",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "simplelog",
+ "tokio",
+ "toml",
+ "uuid",
+]
+
+[[package]]
 name = "http"
 version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -785,52 +817,6 @@ dependencies = [
  "libc",
  "pkg-config",
  "vcpkg",
-]
-
-[[package]]
-name = "oxine"
-version = "0.1.0"
-dependencies = [
- "base62",
- "codepage-437",
- "fixed",
- "flate2",
- "log",
- "mint",
- "rand",
- "serde",
- "tokio",
-]
-
-[[package]]
-name = "oxine-bin"
-version = "0.1.0"
-dependencies = [
- "arrayvec",
- "bytemuck",
- "byteorder",
- "cfg-if",
- "chrono",
- "codepage-437",
- "flate2",
- "identity-hash",
- "itertools",
- "jaded",
- "log",
- "md5",
- "mint",
- "once_cell",
- "oxine",
- "parking_lot",
- "pollster",
- "rand",
- "reqwest",
- "serde",
- "serde_json",
- "simplelog",
- "tokio",
- "toml",
- "uuid",
 ]
 
 [[package]]

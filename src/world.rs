@@ -4,7 +4,7 @@ use std::sync::{Arc};
 use std::sync::atomic::Ordering;
 use arrayvec::ArrayVec;
 use mint::Vector3;
-use oxine::packets::{AtomicLocation, Location, x16};
+use crate::packets::{AtomicLocation, Location};
 use identity_hash::IntMap;
 use itertools::Itertools;
 use crate::player::{
@@ -13,6 +13,7 @@ use crate::player::{
 };
 use tokio::sync::Mutex as TokioMutex;
 use parking_lot::Mutex;
+use crate::level_serde::WorldData;
 
 
 /// A single world within a server.
@@ -83,41 +84,10 @@ impl Default for LevelData {
 impl Default for World {
     fn default() -> Self {
         Self {
-            name: Arc::new(Mutex::new( "debug".into())),
+            name: Arc::default(),
             players: Arc::default(),
             available_ids: Arc::new(Mutex::new(
-                (i8::MIN ..= i8::MAX).collect()
-            )),
-            level_data: Arc::new(TokioMutex::new(
-                LevelData::new(
-                    Vec::from(include_bytes!("default_world.bin")),
-                    Vector3 {x: 8, y: 8, z: 8}
-                )
-            )),
-            default_location: Arc::new(Location {
-                position: Vector3 {x: 4.into(), y: x16::from_num(4.5), z: 4.into()},
-                yaw: 0,
-                pitch: 0,
-            }.into())
-        }
-    }
-}
-
-impl World {
-    /// Initializes a new world, with an empty level.
-    #[must_use]
-    pub fn new() -> Self {
-        Self::default()
-    }
-    
-    /// Initializes an empty world.
-    /// This is easily copyable and quite small.
-    pub fn empty() -> Self {
-        Self {
-            name: Arc::new(Mutex::new("empty".into())),
-            players: Arc::default(),
-            available_ids: Arc::new(Mutex::new(
-                (i8::MIN + 1 ..= i8::MAX).collect()
+                [0].into_iter().collect()
             )),
             level_data: Arc::new(TokioMutex::new(
                 LevelData::new(
@@ -131,6 +101,14 @@ impl World {
                 pitch: 0,
             }.into())
         }
+    }
+}
+
+impl World {
+    /// Initializes a new world, with an empty level.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
     }
     
     /// Checks if the world is full.
@@ -227,7 +205,11 @@ impl World {
             } else { true }
         });
         if !ids.is_empty() {
-            debug!("Dropping players {:?}", ids.iter().map(ToString::to_string).intersperse(",".into()).collect::<Vec<_>>());
+            debug!("Dropping players {:?}", 
+                Itertools::intersperse(
+                    ids.iter().map(ToString::to_string), ",".to_string()
+                ).collect::<Vec<_>>()
+            );
         }
         drop(lock);
         for id in ids {
@@ -329,6 +311,31 @@ impl World {
                     }).await;
                 }
             }); // No real need to wait for these to send
+        }
+    }
+    
+    /// Gets serializable [`WorldData`] from this World.
+    /// 
+    /// This is not an `impl` of `From<&World> for WorldData` due to needing async.
+    pub async fn to_data(&self) -> WorldData {
+        WorldData {
+            name: self.name.lock().to_string(),
+            level_data: self.level_data.lock().await.clone(),
+            spawn_point: self.default_location.as_ref().into()
+        }
+    }
+}
+
+impl From<WorldData> for World {
+    fn from(value: WorldData) -> Self {
+        World {
+            name: Arc::new(Mutex::new(value.name)),
+            players: Arc::default(),
+            available_ids: Arc::new(Mutex::new(
+                (i8::MIN ..= i8::MAX).collect()
+            )),
+            level_data: Arc::new(TokioMutex::new(value.level_data)),
+            default_location: Arc::new(value.spawn_point.into()),
         }
     }
 }

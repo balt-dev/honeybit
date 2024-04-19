@@ -2,31 +2,50 @@
 
 // TODO: Refactor this to not be one giant file
 
-use {
-    crate::player::Command,
-    oxine::{
-        networking::OutgoingPacketType as _, packets::Outgoing, server::SaltExt
-    }, rand::{
-        rngs::StdRng,
-        SeedableRng
-    }, reqwest::StatusCode, std::{
-        collections::{HashMap, VecDeque}, io::ErrorKind, net::Ipv4Addr, sync::{Arc}, time::Instant
-    }, tokio::{
-        io::{self, AsyncWriteExt},
-        net::{TcpListener, TcpStream},
-        sync::{mpsc, Mutex as TokioMutex},
-        time
-    }
+use crate::{
+    player::Command,
+    packets::{Outgoing, OutgoingPacketType},
+    world::World,
+    structs::Config,
+    player::{Player, WeakPlayer}
 };
-
-use crate::world::World;
-
-use crate::structs::Config;
-
-use std::sync::{OnceLock};
+use rand::{
+    rngs::StdRng,
+    SeedableRng,
+    Rng
+};
+use std::{
+    collections::{HashMap, VecDeque},
+    io::ErrorKind,
+    net::Ipv4Addr,
+    sync::Arc,
+    time::Instant,
+    sync::OnceLock
+};
+use tokio::{
+    io::{self, AsyncWriteExt},
+    net::{TcpListener, TcpStream},
+    sync::{mpsc, Mutex as TokioMutex},
+    time,
+};
+use reqwest::StatusCode;
 use parking_lot::Mutex;
 
-use crate::player::{Player, WeakPlayer};
+pub trait SaltExt {
+    /// Generate a salt.
+    fn salt(&mut self) -> String;
+}
+
+impl SaltExt for StdRng {
+    #[inline]
+    fn salt(&mut self) -> String {
+        const SALT_MIN: u128 = 768_909_704_948_766_668_552_634_368; // base62::decode("1000000000000000").unwrap();
+        const SALT_MAX: u128 = 47_672_401_706_823_533_450_263_330_815; // base62::decode("zzzzzzzzzzzzzzzz").unwrap();
+        let num: u128 = self.gen_range(SALT_MIN..=SALT_MAX);
+        base62::encode(num)
+    }
+}
+
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum ServerCommand {
@@ -36,7 +55,7 @@ pub enum ServerCommand {
         username: String,
         /// The message to be sent.
         message: String,
-    }
+    },
 }
 
 /// A server that hasn't been started yet.
@@ -45,7 +64,7 @@ pub struct IdleServer {
     /// A mapping of names to worlds in the server.
     pub worlds: HashMap<String, World>,
     /// The configuration for the server.
-    pub config: Config
+    pub config: Config,
 }
 
 #[derive(Debug, Clone)]
@@ -70,10 +89,10 @@ pub struct RunningServer {
 
 impl RunningServer {
     fn collect_garbage(&self) {
-        let Ok(mut lock) = self.connected_players.try_lock() else { return };
+        let Ok(mut lock) = self.connected_players.try_lock() else { return; };
         lock.retain(|_, player| !player.any_dropped());
     }
-    
+
     fn new(idle: IdleServer, tx: mpsc::Sender<ServerCommand>) -> Option<RunningServer> {
         let default_world = &idle.config.default_world;
         let world = idle.worlds.get(default_world).cloned()?;
@@ -86,7 +105,7 @@ impl RunningServer {
             connected_players: Arc::new(TokioMutex::default()),
             last_salts: Arc::new(Mutex::default()),
             commander: tx,
-            url: Arc::default()
+            url: Arc::default(),
         })
     }
 
@@ -99,22 +118,23 @@ impl RunningServer {
                     let lock = self.connected_players.lock().await;
                     // If left with an & prefix, clients will crash
                     let message = message.strip_suffix('&').unwrap_or(&message);
-                    
+
                     for player in lock.values() {
                         let username = username.clone();
                         let message = message.to_owned();
-                        let Some(handle) = player.handle.clone().upgrade() else { continue };
-                        tokio::spawn( async move {
+                        let Some(handle) = player.handle.clone().upgrade() else { continue; };
+                        tokio::spawn(async move {
                             let _ = handle.send(Command::Message {
-                                username, message
+                                username,
+                                message,
                             }).await;
                         });
                     }
-                },
+                }
                 ServerCommand::Stop => {
                     let lock = self.connected_players.lock().await;
                     for player in lock.values().cloned() {
-                        tokio::spawn( async move {
+                        tokio::spawn(async move {
                             player.notify_disconnect("Server closed").await;
                         });
                     }
@@ -145,28 +165,27 @@ impl IdleServer {
 
         let Some(server) = RunningServer::new(
             self,
-            server_tx.clone()
+            server_tx.clone(),
         ) else {
-            return Err(io::Error::new(ErrorKind::InvalidInput, "Default world does not exist"))
+            return Err(io::Error::new(ErrorKind::InvalidInput, "Default world does not exist"));
         };
 
         let len = config.heartbeat_url.len();
         if len > 0 {
             let _heartbeat = tokio::spawn(server.clone().start_heartbeat());
         } else if config.kept_salts > 0 {
-            return Err(io::Error::new(ErrorKind::InvalidInput, "Cannot verify players if heartbeat URL is unset"))
+            return Err(io::Error::new(ErrorKind::InvalidInput, "Cannot verify players if heartbeat URL is unset"));
         }
-        
+
         let cmd_server = server.clone();
 
         let _commands = tokio::spawn(cmd_server.start_commands(server_rx));
-        
+
         let conn_server = server.clone();
-        
+
         let _server_task = tokio::spawn(async move {
             let server = conn_server;
             loop {
-                info!("Waiting for connection...");
                 server.collect_garbage();
                 let connection = listener.accept().await;
 
@@ -192,12 +211,14 @@ impl IdleServer {
 
                 if let Some(reason) = ban_reason {
                     info!("Banned IP {peer_ip} attempted to join");
-                    let _ = time::timeout(config.packet_timeout, 
-                        Outgoing::Disconnect { reason }.store(&mut stream)
+                    let _ = time::timeout(config.packet_timeout,
+                                          Outgoing::Disconnect { reason }.store(&mut stream),
                     ).await;
                     let _ = stream.shutdown().await;
                     continue;
                 }
+
+                info!("IP {peer_ip} connected");
 
                 tokio::spawn(server.clone().handle_connection(stream));
             }
@@ -211,12 +232,12 @@ impl IdleServer {
 struct HeartbeatResponse {
     errors: Vec<Vec<String>>,
     response: String,
-    status: String
+    status: String,
 }
 
 impl RunningServer {
     /// Disconnect a player from the server by username.
-    /// 
+    ///
     /// # Errors
     /// Returns an error if the player failed to be notified that it was disconnected.
     pub async fn disconnect(&mut self, username: impl AsRef<str>, reason: impl Into<String>) {
@@ -282,16 +303,16 @@ impl RunningServer {
 
             'b: {
                 let request = match
-                    http.get(&url)
-                        .query(&[("port", port)])
-                        .query(&[("max", max_players)])
-                        .query(&[("name", &name)])
-                        .query(&[("public", &public)])
-                        .query(&[("version", 7)])
-                        .query(&[("salt", salt)])
-                        .query(&[("users", user_count)])
-                        .query(&[("json", true)])
-                        .build()
+                http.get(&url)
+                    .query(&[("port", port)])
+                    .query(&[("max", max_players)])
+                    .query(&[("name", &name)])
+                    .query(&[("public", &public)])
+                    .query(&[("version", 7)])
+                    .query(&[("salt", salt)])
+                    .query(&[("users", user_count)])
+                    .query(&[("json", true)])
+                    .build()
                 {
                     Ok(v) => v,
                     Err(err) => {
@@ -305,7 +326,7 @@ impl RunningServer {
                 let res = time::timeout(timeout, http.execute(request)).await;
 
                 match res {
-                    Ok(Ok(response)) =>  {
+                    Ok(Ok(response)) => {
                         let stat = response.status();
                         if StatusCode::OK != stat {
                             warn!(
@@ -325,9 +346,9 @@ impl RunningServer {
                             warn!("Failed to decode heartbeat response as JSON: {text}");
                             break 'b;
                         };
-                        
+
                         trace!("Successfully got response of {response:?}");
-                        
+
                         if response.status != "success" {
                             // The ping failed, we warn and stop
                             warn!("Heartbeat ping failed:");
@@ -354,7 +375,7 @@ impl RunningServer {
                         trace!("New url: {url}");
 
                         self.url.get_or_init(|| url);
-                    },
+                    }
                     Ok(Err(err)) => {
                         warn!("Failed to send heartbeat ping: {err}");
                     }
@@ -372,7 +393,7 @@ impl RunningServer {
     /// Handles a TCP connection, consuming it. This will block.
     async fn handle_connection(self, tcp_stream: TcpStream) {
         let (reader, writer) = tcp_stream.into_split();
-        
+
         let player = Player::new(self.clone(), writer);
 
         player.downgrade().handle_packets(reader, self.clone()).await;

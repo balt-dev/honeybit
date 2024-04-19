@@ -1,4 +1,5 @@
-/lib/target
-/bin/target
-/bin/logs
-/bin/config.toml
+target/
+logs/
+config.toml
+
+server_level.dat
