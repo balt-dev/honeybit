@@ -15,12 +15,10 @@ use std::{
     process::ExitCode,
     collections::HashMap,
     fs::File,
-    io::{ErrorKind, Read, SeekFrom, Write},
+    io::{ErrorKind, Read, Write},
     path::Path,
     time::{Duration},
-    ffi::OsStr,
-    path::PathBuf,
-    sync::OnceLock
+    ffi::OsStr
 };
 use chrono::Local;
 use serde::{Deserialize, Serialize};

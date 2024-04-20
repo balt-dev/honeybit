@@ -1,21 +1,16 @@
 use std::{
     convert,
-    io::{self, ErrorKind, Read},
+    io::{self, ErrorKind},
     sync::{
         Arc,
         atomic::AtomicI8,
         atomic::Ordering,
     },
     time::Duration,
-    io::{Cursor, Write},
     sync::atomic::AtomicBool,
     sync::Weak
 };
 use pollster::FutureExt as _;
-use flate2::{
-    Compression,
-    read::GzEncoder
-};
 use crate::{
     packets::{
         IncomingPacketType as _,
