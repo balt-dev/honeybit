@@ -1,4 +1,6 @@
 //! Holds structs for use in sending packets to and from clients.
+#![allow(clippy::cast_possible_wrap, clippy::cast_sign_loss)]
+
 
 use std::sync::atomic::{AtomicU16, AtomicU8, Ordering};
 use fixed::{

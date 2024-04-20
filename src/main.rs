@@ -131,7 +131,7 @@ async fn inner_main(path: &Path) -> Result<(), Box<dyn Error>> {
         config,
     };
     
-    let handle = try_with_context!(
+    let _handle = try_with_context!(
         server.start().await;
         error "Startup: {}"
     );
@@ -217,7 +217,7 @@ async fn load_worlds(path: &Path) -> Result<HashMap<String, World>, Box<dyn Erro
 
         let world = World::from_data(world_data, path.clone());
         let name = {
-            let lock = world.world_data.lock().await;
+            let lock = world.data.lock().await;
             lock.name.clone()
         };
 

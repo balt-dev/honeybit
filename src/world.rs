@@ -28,11 +28,12 @@ pub struct World {
     /// A list of available player IDs.
     pub available_ids: Arc<Mutex<ArrayVec<i8, 256>>>,
     /// The stored data of the world.
-    pub world_data: Arc<TokioMutex<WorldData>>,
+    pub data: Arc<TokioMutex<WorldData>>,
 }
 
 /// A holding class for a serialized level .DAT file.
 #[derive(Debug, Clone)]
+#[allow(clippy::module_name_repetitions)]
 pub struct WorldData {
     /// The raw level data.
     pub level_data: LevelData,
@@ -100,7 +101,7 @@ impl Default for World {
             available_ids: Arc::new(Mutex::new(
                 [0].into_iter().collect()
             )),
-            world_data: Arc::new(TokioMutex::new(
+            data: Arc::new(TokioMutex::new(
                 WorldData {
                     level_data: LevelData::default(),
                     spawn_point: Location::default(),
@@ -166,7 +167,7 @@ impl World {
 
         // We hold the lock for the entire time here so that
         // any block updates aren't pushed until the world data is done being sent
-        let data_lock = self.world_data.lock().await;
+        let data_lock = self.data.lock().await;
 
         let dimensions = data_lock.level_data.dimensions;
 
@@ -219,7 +220,7 @@ impl World {
         }
 
         let default_location = {
-            let lock = self.world_data.lock().await;
+            let lock = self.data.lock().await;
             lock.spawn_point
         };
 
@@ -328,7 +329,7 @@ impl World {
     /// This **does not block**, and instead returns a false boolean if the level data is locked.
     pub fn set_block(&self, location: Vector3<u16>, id: u8) -> bool {
         {
-            let Ok(mut data_lock) = self.world_data.try_lock() else {
+            let Ok(mut data_lock) = self.data.try_lock() else {
                 return false;
             };
 
@@ -378,11 +379,11 @@ impl World {
     pub fn from_data(data: WorldData, path: PathBuf) -> Self {
         Self {
             filepath: Arc::new(path),
-            players: Arc::new(Default::default()),
+            players: Arc::default(),
             available_ids: Arc::new(Mutex::new(
                 (i8::MIN..=i8::MAX).collect()
             )),
-            world_data: Arc::new(TokioMutex::new(data)),
+            data: Arc::new(TokioMutex::new(data)),
         }
     }
 }

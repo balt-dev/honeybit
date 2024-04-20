@@ -54,7 +54,7 @@ impl WorldData {
         }
     }
 
-    /// Load the world data from a .mine or server_level.dat file.
+    /// Load the world data from a .mine or `server_level.dat` file.
     /// 
     /// # Errors
     /// Errors if the stream fails to be decoded.
