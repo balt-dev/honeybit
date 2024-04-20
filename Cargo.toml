@@ -26,6 +26,7 @@ bytemuck = "1"
 codepage-437 = "0.1"
 fixed = "1"
 base62 = "2"
+dirs = "5"
 
 [dependencies.serde]
 version = "1"

@@ -1,5 +1,10 @@
-## Binary code
-
+# HoneyBit
+An experimental Minecraft Classic server software, written in Rust.
 ---
 
-This is the implementation of the frontend of the server.
+
+Roadmap:
+- [ ] Working server
+- [ ] Clean up code
+- [ ] Lua scripting API
+- [ ] (Partial) CPE support

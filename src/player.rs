@@ -209,7 +209,7 @@ impl WeakPlayer {
         tokio::spawn(self.clone().start_block_queue(brx));
         tokio::spawn(self.clone().start_heartbeat(packet_send.clone(), ping_spacing, packet_timeout));
 
-        'out: while let Some(command) = rx.recv().await {
+        while let Some(command) = rx.recv().await {
             match command {
                 Command::Disconnect { reason } => {
                     debug!("Disconnecting {}: {reason}", self.uuid);
@@ -277,74 +277,14 @@ impl WeakPlayer {
                     }).await;
                 }
                 // TODO: Move this to a function on World
-                Command::SendTo { world } => {
-                    // The future checker doesn't consider dropping a mutex lock
-                    // via std::mem::drop
-                    // as making it unusable, so we do this instead.
-                    let disconnect_reason = 'b: {
-
-                        if world.is_full() {
-                            break 'b "World is full".into();
-                        }
-
-                        // We hold the lock for the entire time here so that
-                        // any block updates aren't pushed until the world data is done being sent
-                        let data_lock = world.level_data.lock().await;
-
-                        let dimensions = data_lock.dimensions;
-
-
-                        // GZip level data
-                        let data_slice = data_lock.raw_data.as_slice();
-
-                        debug!("{} bytes to compress", data_slice.len());
-
-                        if let Err(err) = packet_send.send(Outgoing::LevelInit).await {
-                            break 'b format!("IO error: {err}")
-                        }
-
-                        let mut encoder = GzEncoder::new(WorldEncoder::new(data_slice), Compression::fast());
-
-                        // For some reason, streaming the encoded data refused to work.
-                        // Really annoying but oh well I guess >:/
-                        let mut encoded_data = Vec::new();
-                        encoder.read_to_end(&mut encoded_data).expect("reading into Vec should never fail");
-
-                        let mut buf = [0; 1024];
-
-                        let iter = encoded_data.chunks(1024);
-                        let chunk_count = iter.len();
-
-                        for (i, chunk) in iter.enumerate() {
-                            buf[..chunk.len()].copy_from_slice(chunk);
-
-                            #[allow(clippy::pedantic)]
-                            if let Err(err) = packet_send.send(Outgoing::LevelDataChunk {
-                                data_length: chunk.len() as u16,
-                                data_chunk: Box::new(buf),
-                                percent_complete: ((i as f32) / (chunk_count as f32) * 100.0) as u8
-                            }).await {
-                                break 'b format!("IO error: {err}")
-                            }
-                        }
-
-                        if let Err(err) = packet_send.send(Outgoing::LevelFinalize {
-                            size: dimensions
-                        }).await {
-                            break 'b format!("IO error: {err}")
-                        }
-
-                        drop(data_lock);
-
-                        // Check again, preventing TOC-TOU bug
-                        let Some(_) = world.add_player(self.clone()).await else {
-                            debug!("World was full");
-                            break 'b "World is full".into();
-                        };
-
-                        continue 'out;
-                    };
-                    let () = self.clone().notify_disconnect(disconnect_reason).await;
+                Command::SendTo { world: dst_world } => {
+                    let Some(src_world) = self.world.upgrade() else { continue };
+                    let Some(id) = self.id.upgrade() else { continue };
+                    {
+                        let lock = src_world.lock();
+                        lock.remove_player(id.load(Ordering::Relaxed));
+                    }
+                    dst_world.add_player(self.clone(), packet_send.clone()).await;
                 }
                 Command::SetBlock { location, id } => {
                     let _ = packet_send.send(
@@ -382,11 +322,12 @@ impl WeakPlayer {
                     ).await;
                 }
                 Command::Message { username, message } => {
+                    // TODO: Is this the best way to do this?
+                    let message = format!("&f{username}: {message}");
                     let _ = packet_send.send(
                         Outgoing::Message {
                             id: -1,
-                            // TODO: Is this the best way to do this?
-                            message: format!("&f{username}: {message}")
+                            message: message.trim_end_matches('&').into()
                         }
                     ).await;
                 }
@@ -402,7 +343,7 @@ impl WeakPlayer {
                 .await
                 .map_err(|_| io::Error::from(ErrorKind::TimedOut))
                 .and_then(convert::identity) // Flatten error (.flatten() is not stable yet)
-                else { break; };
+            else { break };
             trace!("Sent packet {packet:?} to {}", self.uuid);
         }
     }
@@ -529,36 +470,6 @@ impl WeakPlayer {
                     }
                 }
             }
-        }
-    }
-}
-
-
-struct WorldEncoder<'inner> {
-    inner: Cursor<&'inner [u8]>,
-    length_read: bool
-}
-
-impl<'inner> WorldEncoder<'inner> {
-    fn new(slice: &'inner [u8]) -> Self {
-        Self {
-            inner: Cursor::new(slice),
-            length_read: false
-        }
-    }
-}
-
-impl<'inner> Read for WorldEncoder<'inner> {
-    #[allow(clippy::cast_possible_truncation)]
-    fn read(&mut self, mut buf: &mut [u8]) -> io::Result<usize> {
-        if self.length_read {
-            self.inner.read(buf)
-        } else {
-            let len = self.inner.get_ref().len() as u32;
-            let slice = len.to_be_bytes();
-            buf.write_all(&slice)?;
-            self.length_read = true;
-            Ok(4)
         }
     }
 }

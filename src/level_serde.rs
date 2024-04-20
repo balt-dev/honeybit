@@ -10,7 +10,7 @@ use mint::Vector3;
 use crate::packets::{x16, Location};
 use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
 
-use crate::world::LevelData;
+use crate::world::{LevelData, WorldData};
 
 /// An instance of Java world data.
 #[derive(jaded::FromJava)]
@@ -26,17 +26,6 @@ struct JavaWorld {
     zSpawn: i32,
     rotSpawn: f32
 }
-
-/// A holding class for a serialized level .DAT file.
-pub struct WorldData {
-    /// The raw level data.
-    pub level_data: LevelData,
-    /// The player spawn point.
-    pub spawn_point: Location,
-    /// The world's name.
-    pub name: String
-}
-
 macro_rules! invalid {
     ($($f: tt)+) => {
         io::Error::new(ErrorKind::InvalidData, format!($($f)+))
@@ -59,9 +48,9 @@ impl WorldData {
             .map_err(|err| invalid!("Failed to read magic string: {err}"))?;
         if magic_buf == MAGIC {
             stream.rewind()?;
-            WorldData::load(stream).map(|world| (world, true))
+            WorldData::load(stream).map(|w| (w, true))
         } else {
-            WorldData::import(stream).map(|world| (world, false))
+            WorldData::import(stream).map(|w| (w, false))
         }
     }
 
@@ -191,7 +180,7 @@ impl WorldData {
 
     /// Store the world data into a .hbit file.
     /// See [`load`] for the level format
-    /// 
+    ///
     /// # Errors
     /// Errors if the world fails to be encoded.
     pub fn store(&self, mut stream: impl Write) -> io::Result<()> {

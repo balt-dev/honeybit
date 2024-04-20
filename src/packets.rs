@@ -166,6 +166,16 @@ pub struct Location {
     pub pitch: u8
 }
 
+impl Default for Location {
+    fn default() -> Self {
+        Self {
+            position: Vector3 { x: 0.into(), y: 0.into(), z: 0.into() },
+            yaw: 0,
+            pitch: 0
+        }
+    }
+}
+
 /// A single player's position and rotation, stored to allow atomic operations.
 #[derive(Debug)]
 pub struct AtomicLocation {

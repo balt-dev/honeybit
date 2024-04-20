@@ -15,40 +15,44 @@ use std::{
     process::ExitCode,
     collections::HashMap,
     fs::File,
-    io::{ErrorKind, Read, Seek, SeekFrom, Write},
+    io::{ErrorKind, Read, SeekFrom, Write},
     path::Path,
-    time::{Duration}
+    time::{Duration},
+    ffi::OsStr,
+    path::PathBuf,
+    sync::OnceLock
 };
-use std::ffi::OsStr;
-use std::path::PathBuf;
-use std::sync::OnceLock;
 use chrono::Local;
-use itertools::Itertools;
 use serde::{Deserialize, Serialize};
 use simplelog::{ColorChoice, TerminalMode};
 use crate::{
-    world::World,
+    world::{WorldData, World},
     network::IdleServer,
-    structs::Config
+    structs::Config,
 };
-use crate::level_serde::WorldData;
+use dirs::data_local_dir;
 
 #[macro_use]
 extern crate log;
 
 #[tokio::main]
 async fn main() -> ExitCode {
-    let Ok(path) = std::env::current_exe() else {
-        eprintln!("Failed to get current path");
-        return ExitCode::FAILURE;
+    let path = if let Some(p) = data_local_dir() {
+        p.join("honeybit")
+    } else {
+        eprintln!("No local directory found for this OS, using current directory...");
+        let Ok(path) = std::env::current_exe() else {
+            eprintln!("Failed to get current path");
+            return ExitCode::FAILURE;
+        };
+        path.parent().expect("executable path always has a parent").to_path_buf()
     };
-    let path = path.parent().expect("executable path always has a parent");
     
     let now = Local::now();
 
-    let logs_path = path.join("../bin/logs");
+    let logs_path = path.join("logs");
     
-    match fs::create_dir(&logs_path) {
+    match fs::create_dir_all(&logs_path) {
         Ok(()) => {},
         Err(err) if err.kind() == ErrorKind::AlreadyExists => {},
         Err(err) => {
@@ -120,6 +124,28 @@ async fn inner_main(path: &Path) -> Result<(), Box<dyn Error>> {
         error "Setting up defaults: {}"
     );
 
+    let config = load_config(path)?;
+
+    let worlds = load_worlds(path).await?;
+    
+    let server: IdleServer = IdleServer {
+        worlds,
+        config,
+    };
+    
+    let handle = try_with_context!(
+        server.start().await;
+        error "Startup: {}"
+    );
+
+    
+    
+    tokio::time::sleep(Duration::MAX).await;
+    
+    unreachable!("the program should not be running for 500 billion years")
+}
+
+fn load_config(path: &Path) -> Result<Config, Box<dyn Error>> {
     let config_path = path.join("config.toml");
 
     let mut config_string = String::new();
@@ -137,27 +163,10 @@ async fn inner_main(path: &Path) -> Result<(), Box<dyn Error>> {
         error "Deserializing config file: {}"
     );
     config.path = config_path;
-
-    let worlds = load_worlds(path)?;
-    
-    let server: IdleServer = IdleServer {
-        worlds,
-        config,
-    };
-    
-    let handle = try_with_context!(
-        server.start().await;
-        error "Startup: {}"
-    );
-
-    // TODO: Server command REPL
-    
-    tokio::time::sleep(Duration::MAX).await;
-    
-    unreachable!("the program should not be running for 500 billion years")
+    Ok(config)
 }
 
-fn load_worlds(path: &Path) -> Result<HashMap<String, World>, Box<dyn Error>> {
+async fn load_worlds(path: &Path) -> Result<HashMap<String, World>, Box<dyn Error>> {
     let world_dir = path.join("worlds");
     
     let worlds = try_with_context!(
@@ -165,27 +174,65 @@ fn load_worlds(path: &Path) -> Result<HashMap<String, World>, Box<dyn Error>> {
         error "Failed to open worlds directory: {}"
     );
     
+    let mut world_map = HashMap::new();
+    
     for world in worlds {
         let world = try_with_context!(world; error "Failed to read worlds directory: {}");
-        let path = world.path();
+        let mut path = world.path();
 
         // For windows users
-        if path.file_name() == Some(OsStr::new("desktop.ini")) { continue }
+        if path.file_name() == Some(OsStr::new("desktop.ini")) 
+            || path.extension().is_some_and(|ext| ext.as_encoded_bytes().ends_with(b"~"))
+        {
+            continue
+        }
 
         let file = try_with_context!(
+            File::open(&path);
+            warn "Failed to open {}: {}"; path.display()
+        );
+
+        let (world_data, is_hbit) = try_with_context!(
+            WorldData::guess_load(file); 
+            warn "Failed to parse {}: {}"; path.display()
+        );
+        
+        if !is_hbit {
+            let old_path = path.clone();
+            path.set_extension("hbit");
+            let file = try_with_context!(
                 File::open(&path);
                 warn "Failed to open {}: {}"; path.display()
             );
-
-        let world_data = try_with_context!(
-                WorldData::load(file); 
-                warn "Failed to parse {}: {}\n"; path.display()
+            try_with_context!(
+                world_data.store(file);
+                warn "Failed to resave {}: {}"; path.display()
             );
+            // Now that everything succeeded, rename the old path so we don't trip on it
+            let mut ext = old_path.extension().unwrap_or_default().to_owned();
+            ext.push("~");
+            let new_path = old_path.with_extension(ext);
+            if let Err(err) = fs::rename(&old_path, new_path) {
+                warn!("Failed to rename old world {}: {err}\nYou need to do this manually to prevent the file from doubling!", old_path.display());
+            }
+        }
 
-        let world = World::from(world_data);
+        let world = World::from_data(world_data, path.clone());
+        let name = {
+            let lock = world.world_data.lock().await;
+            lock.name.clone()
+        };
+
+        if let Some(occupied) = world_map.insert(name.clone(), world) {
+            warn!(
+                "Two worlds have the same name of {name}:\n- {}\n- {}",
+                path.display(),
+                occupied.filepath.display()
+            );
+        }
     }
     
-    todo!()
+    Ok(world_map)
 }
 
 fn set_up_defaults(path: &Path) -> Result<(), Box<dyn Error>> {
