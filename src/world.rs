@@ -1,4 +1,5 @@
 //! Holds structs pertaining to a world in a server.
+#![allow(clippy::unnecessary_to_owned)] // There are many false positives in this file.
 
 use std::{io, path::PathBuf, sync::{Arc, atomic::Ordering}};
 use std::io::{Cursor, Read, Write};
@@ -8,7 +9,7 @@ use flate2::read::GzEncoder;
 use mint::Vector3;
 use crate::{
     packets::Location,
-    player::{WeakPlayer, Command},
+    player::WeakPlayer,
 };
 use identity_hash::IntMap;
 use itertools::Itertools;
@@ -77,7 +78,6 @@ impl LevelData {
     /// Gets a mutable reference to the ID of a block in the level.
     pub fn get_mut(&mut self, position: Vector3<u16>) -> Option<&mut u8> {
         if position.x >= self.dimensions.x || position.y >= self.dimensions.y || position.z >= self.dimensions.z {
-            debug!("{position:?}, {:?}", self.dimensions);
             None
         } else {
             let pos = Vector3 { x: position.x as usize, y: position.y as usize, z: position.z as usize };
@@ -142,6 +142,13 @@ impl<'inner> Read for WorldEncoder<'inner> {
     }
 }
 
+macro_rules! fire_and_forget {
+    ($expr: expr) => {
+        tokio::spawn(async move {
+            {$expr}.await;
+        });
+    };
+}
 
 impl World {
     /// Initializes a new world, with an empty level.
@@ -170,10 +177,25 @@ impl World {
         let data_lock = self.data.lock().await;
 
         let dimensions = data_lock.level_data.dimensions;
-
-
+        
         // GZip level data
         let data_slice = data_lock.level_data.raw_data.as_slice();
+        
+        let expected_area = dimensions.x as usize * dimensions.y as usize * dimensions.z as usize;
+        let actual_area = data_slice.len();
+        if actual_area != expected_area {
+            warn!(
+                "World \"{}\" is corrupt (expected {expected_area} bytes for {}x{}x{}, got {actual_area} bytes)",
+                data_lock.name,
+                dimensions.x,
+                dimensions.y,
+                dimensions.z
+            );
+            player.notify_disconnect(
+                format!("World is corrupt (exp. {expected_area} bytes, got {actual_area} bytes)")
+            ).await;
+            return None;
+        }
 
         debug!("{} bytes to compress", data_slice.len());
 
@@ -224,9 +246,7 @@ impl World {
             lock.spawn_point
         };
 
-        let _ = player.handle.upgrade()?.send(Command::SetLocation {
-            location: default_location
-        }).await;
+        player.set_location(default_location).await;
 
         {
             let mut player_lock = self.players.lock();
@@ -237,28 +257,18 @@ impl World {
             for (id, other) in player_lock.iter().map(|(i, p)| (*i, p.clone())) {
                 let Some(name) = other.username.upgrade() else { continue; };
                 let name = name.lock().clone();
-
-                if let Some(other_handle) = other.handle.upgrade() {
-                    let name = player_name.clone();
-                    tokio::spawn(async move {
-                        let _ = other_handle.send(Command::NotifyJoin {
-                            id: player_id,
-                            location: default_location,
-                            name,
-                        }).await;
-                    });
+                
+                let other_f = other.clone();
+                let pname_f = player_name.clone();
+                fire_and_forget! {
+                    other_f.notify_join(player_id, default_location, pname_f)
                 }
 
                 if let Some(other_loc) = other.location.upgrade() {
-                    let handle = player.handle.clone();
-                    let Some(upgraded) = handle.upgrade() else { continue; };
-                    tokio::spawn(async move {
-                        let _ = upgraded.send(Command::NotifyJoin {
-                            id,
-                            location: other_loc.as_ref().into(),
-                            name,
-                        }).await;
-                    });
+                    let player_f = player.clone();
+                    fire_and_forget! {
+                        player_f.notify_join(id, other_loc.as_ref(), name)
+                    }
                 }
             }
         }
@@ -311,9 +321,7 @@ impl World {
 
         for player in player_lock.values().cloned() {
             tokio::spawn(async move {
-                if let Some(handle) = player.handle.upgrade() {
-                    let _ = handle.send(Command::NotifyLeave { id }).await;
-                }
+                player.notify_left(id).await;
             });
         }
 
@@ -346,12 +354,7 @@ impl World {
 
             for player in player_lock.values().cloned() {
                 tokio::spawn(async move {
-                    if let Some(handle) = player.handle.upgrade() {
-                        let _ = handle.send(Command::SetBlock {
-                            location,
-                            id,
-                        }).await;
-                    }
+                    player.set_block(id, location).await;
                 }); // No real need to wait for these to send
             }
         }
@@ -365,12 +368,7 @@ impl World {
 
         for player in player_lock.values().cloned() {
             tokio::spawn(async move {
-                if let Some(handle) = player.handle.upgrade() {
-                    let _ = handle.send(Command::NotifyMove {
-                        id,
-                        location,
-                    }).await;
-                }
+                player.notify_move(id, location).await;
             }); // No real need to wait for these to send
         }
     }

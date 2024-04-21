@@ -2,6 +2,7 @@
 #![allow(clippy::cast_possible_wrap, clippy::cast_sign_loss)]
 
 
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicU16, AtomicU8, Ordering};
 use fixed::{
     FixedI8, FixedU16,
@@ -16,9 +17,18 @@ pub type x8 = FixedI8<U5>;
 /// Type alias for fixed point fractional u16s.
 pub type x16 = FixedU16<U5>;
 
+bitflags! {
+    /// A bitfield of supported extensions.
+    #[derive(Debug, Clone, PartialEq, Eq, Copy, Hash)]
+    pub struct SupportedExtensions: u32 {
+        const FULL_CP437 = 0x1;
+        const LONGER_MESSAGES = 0x2;
+        const EMOTE_FIX = 0x4;
+    }
+}
+
 /// Packets going from the client to the server.
-#[repr(u8)]
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Incoming {
     /// Sent by a player joining the server.
     PlayerIdentification {
@@ -27,27 +37,43 @@ pub enum Incoming {
         /// The player's username.
         username: String,
         /// The player's verification key.
-        key: String
-    } = 0x00,
+        key: String,
+        /// Whether the player supports CPE.
+        cpe_supported: bool
+    },
     /// Sent when a user changes a block.
     SetBlock {
         /// The position of the changed block.
         position: Vector3<u16>,
         /// The block's new state. 0x00 represents destroying a block.
         state: u8
-    } = 0x05,
+    },
     /// Sent to update a player's location.
     /// The player ID always refers to the sender, so it is left out.
     SetLocation {
         /// The player's new position and rotation.
         location: Location
-    } = 0x08,
+    },
     /// Sent when a chat message is sent.
     Message {
         /// The chat message sent.
-        message: String
-    } = 0x0D
+        message: [u8; 64],
+        /// Whether this chat message should be appended to the last.
+        append: bool
+    },
+    /// Sent to notify the server that the player supports CPE, and which extensions it supports.
+    ExtInfoEntry {
+        /// A bitfield of supported versions.
+        supported_exts: SupportedExtensions
+    }
 }
+
+/// A list of supported CPE extensions.
+static SUPPORTED_EXTS: Lazy<HashMap<String, (SupportedExtensions, u32)>> = Lazy::new(|| HashMap::from([
+    ("FullCP437".into(), (SupportedExtensions::FULL_CP437, 1)),
+    ("LongerMessages".into(), (SupportedExtensions::LONGER_MESSAGES, 1)),
+    ("EmoteFix".into(), (SupportedExtensions::EMOTE_FIX, 1))
+]));
 
 /// Packets going from the server to the client.
 #[repr(u8)]
@@ -63,11 +89,11 @@ pub enum Outgoing {
         motd: String,
         /// Whether the player is an operator or not.
         operator: bool
-    } = 0x00,
+    },
     /// Periodically sent to clients.
-    Ping = 0x01,
+    Ping,
     /// Notifies a player of incoming level data.
-    LevelInit = 0x02,
+    LevelInit,
     /// Contains a chunk of level data.
     LevelDataChunk {
         /// How many bytes are initialized in the chunk.
@@ -76,19 +102,19 @@ pub enum Outgoing {
         data_chunk: Box<[u8; 1024]>,
         /// How close the level data is to being fully sent.
         percent_complete: u8
-    } = 0x03,
+    },
     /// Sent after level data is done sending, containing map dimensions.
     LevelFinalize {
         /// The size of the map.
         size: Vector3<u16>
-    } = 0x04,
+    },
     /// Sent after a block change.
     SetBlock {
         /// The position of the changed block.
         position: Vector3<u16>,
         /// The changed block's type.
         block: u8
-    } = 0x06,
+    },
     /// Sent for when a new player is spawning into the world.
     SpawnPlayer {
         /// The player's ID.
@@ -97,14 +123,14 @@ pub enum Outgoing {
         name: String,
         /// The player's spawn position and rotation.
         location: Location
-    } = 0x07,
+    },
     /// Sent to teleport a player to a location.
     TeleportPlayer {
         /// The player's ID.
         id: i8,
         /// The player's new position and rotation.
         location: Location
-    } = 0x08,
+    },
     /// Sent to update a player's position and rotation.
     UpdatePlayerLocation {
         /// The player's ID.
@@ -115,14 +141,14 @@ pub enum Outgoing {
         yaw: u8,
         /// The player's new pitch.
         pitch: u8,
-    } = 0x09,
+    },
     /// Sent to update a player's position.
     UpdatePlayerPosition {
         /// The player's ID.
         id: i8,
         /// The player's change in position.
         position_change: Vector3<x8>
-    } = 0x0a,
+    },
     /// Sent to update a player's rotation.
     UpdatePlayerRotation {
         /// The player's ID.
@@ -131,29 +157,31 @@ pub enum Outgoing {
         yaw: u8,
         /// The player's new pitch.
         pitch: u8
-    } = 0x0b,
+    },
     /// Sent when another player disconnects.
     DespawnPlayer {
         /// The despawning player's ID.
         id: i8,
-    } = 0x0c,
+    },
     /// Sent to players when a message is sent in chat.
     Message {
         /// The player who sent the message.
         id: i8,
         /// The message sent.
-        message: String
-    } = 0x0d,
+        message: [u8; 64]
+    },
     /// Sent to a player to disconnect them.
     Disconnect {
         /// The reason the player is disconnecting.
         reason: String
-    } = 0x0e,
+    },
     /// Sent when a player's operator status changes.
     UpdateUser {
         /// Whether the player is an operator or not.
         operator: bool
-    } = 0x0F
+    },
+    /// Sent to notify players that the server supports CPE.
+    ExtInfoEntry
 }
 
 
@@ -230,7 +258,9 @@ impl From<Location> for AtomicLocation {
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 use std::io::{self, ErrorKind};
+use bitflags::bitflags;
 use codepage_437::{BorrowFromCp437, ToCp437};
+use once_cell::sync::Lazy;
 
 /// Dictates that this type can be loaded from a packet. This trait is sealed.
 pub trait IncomingPacketType {
@@ -283,6 +313,20 @@ impl IncomingPacketType for u16 {
 }
 
 impl OutgoingPacketType for u16 {
+    async fn store(&self, mut destination: impl AsyncWrite + Unpin) -> io::Result<()> {
+        destination.write_all(&self.to_be_bytes()).await
+    }
+}
+
+impl IncomingPacketType for u32 {
+    async fn load(mut source: impl AsyncRead + Unpin) -> io::Result<Self> {
+        let mut buf = [0; 4];
+        source.read_exact(&mut buf).await?;
+        Ok(u32::from_be_bytes(buf))
+    }
+}
+
+impl OutgoingPacketType for u32 {
     async fn store(&self, mut destination: impl AsyncWrite + Unpin) -> io::Result<()> {
         destination.write_all(&self.to_be_bytes()).await
     }
@@ -375,15 +419,15 @@ impl OutgoingPacketType for String {
 }
 
 
-impl IncomingPacketType for [u8; 1024] {
+impl<const SIZE: usize> IncomingPacketType for [u8; SIZE] {
     async fn load(mut source: impl AsyncRead + Unpin) -> io::Result<Self> {
-        let mut buf = [0; 1024];
+        let mut buf = [0; SIZE];
         source.read_exact(&mut buf).await?;
         Ok(buf)
     }
 }
 
-impl OutgoingPacketType for [u8; 1024] {
+impl<const SIZE: usize> OutgoingPacketType for [u8; SIZE] {
     async fn store(&self, mut destination: impl AsyncWrite + Unpin) -> io::Result<()> {
         destination.write_all(self).await
     }
@@ -393,14 +437,11 @@ impl IncomingPacketType for Incoming {
     async fn load(mut source: impl AsyncRead + Unpin) -> io::Result<Self> {
         let discriminant = u8::load(&mut source).await?;
         Ok(match discriminant {
-            0x00 => {
-                let ret = Incoming::PlayerIdentification {
-                    version: u8::load(&mut source).await?,
-                    username: String::load(&mut source).await?,
-                    key: String::load(&mut source).await?
-                };
-                let _ = u8::load(source).await?;
-                ret
+            0x00 => Incoming::PlayerIdentification {
+                version: u8::load(&mut source).await?,
+                username: String::load(&mut source).await?,
+                key: String::load(&mut source).await?,
+                cpe_supported: u8::load(source).await? == 0x42
             },
             0x05 => {
                 let position = Vector3::<u16>::load(&mut source).await?;
@@ -417,20 +458,42 @@ impl IncomingPacketType for Incoming {
                     location: Location::load(&mut source).await?
                 }
             },
-            0x0d => {
-                let _ = u8::load(&mut source).await?;
-                Incoming::Message {
-                    message: String::load(source).await?
+            0x0d => Incoming::Message {
+                append: u8::load(&mut source).await? == 1,
+                message: <[u8; 64]>::load(source).await?
+            },
+            0x10 => {
+                let _ = String::load(&mut source).await?; // We don't care what the client is
+                let count = u16::load(&mut source).await?;
+                debug!("Client supports {count}");
+                let mut supported_exts = SupportedExtensions::empty();
+                for _ in 0..count {
+                    let id = u8::load(&mut source).await?;
+                    if id != 0x11 {
+                        return Err(
+                            io::Error::new(ErrorKind::InvalidData, format!("Expected ExtEntry (0x11), got 0x{id:02x}"))
+                        )
+                    }
+                    let name = String::load(&mut source).await?;
+                    let their_version = u32::load(&mut source).await?;
+                    debug!("Client supports extension \"{name}\" with version {their_version}");
+                    let Some((mask, our_version)) = SUPPORTED_EXTS.get(&name)
+                        else { continue };
+                    if *our_version == their_version {
+                        supported_exts |= *mask;
+                    }
                 }
-            }
-            _ => return Err(
-                io::Error::from(ErrorKind::InvalidData)
+                Incoming::ExtInfoEntry { supported_exts }
+            },
+            dis => return Err(
+                io::Error::new(ErrorKind::InvalidData, format!("Invalid packet discriminator 0x{dis:02x}"))
             )
         })
     }
 }
 
 impl OutgoingPacketType for Outgoing {
+    #[allow(clippy::cast_possible_truncation)]
     async fn store(&self, mut destination: impl AsyncWrite + Unpin) -> io::Result<()> {
         match self {
             Outgoing::ServerIdentification { version, name, motd, operator } => {
@@ -502,6 +565,18 @@ impl OutgoingPacketType for Outgoing {
             Outgoing::UpdateUser { operator } => {
                 0xfu8.store(&mut destination).await?;
                 (if *operator {0x64} else {0u8}).store(destination).await
+            },
+            Outgoing::ExtInfoEntry => {
+                0x10u8.store(&mut destination).await?;
+                "Honeybit".to_string().store(&mut destination).await?;
+                (SUPPORTED_EXTS.len() as u16).store(&mut destination).await?;
+                for (name, (_, version)) in SUPPORTED_EXTS.iter() {
+                    0x11u8.store(&mut destination).await?;
+                    name.to_string().store(&mut destination).await?;
+                    (*version).store(&mut destination).await?;
+                    debug!("Server supports extension \"{name}\" with version {version}");
+                }
+                Ok(())
             }
         }
     }

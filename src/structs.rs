@@ -84,7 +84,15 @@ pub struct Config {
     /// Whether the server should be public in the server list.
     pub public: bool,
     /// The server's MOTD.
-    pub motd: String
+    pub motd: String,
+    /// The maximum message length.
+    pub max_message_length: usize,
+    /// The string used to format messages.
+    pub message_format: String,
+    /// The string used to format join messages.
+    pub join_format: String,
+    /// The string used to format leave messages.
+    pub leave_format: String
 }
 
 impl Default for Config {
@@ -93,7 +101,7 @@ impl Default for Config {
             path: PathBuf::default(),
             packet_timeout: Duration::from_secs(10),
             ping_spacing: Duration::from_millis(500),
-            default_world: "world".into(),
+            default_world: "default".into(),
             banned_ips: HashMap::from([
                 (IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)), "<ban reason>".into()),
                 (IpAddr::V4(Ipv4Addr::new(0, 0, 0, 1)), "<ban reason>".into()),
@@ -106,7 +114,7 @@ impl Default for Config {
             ]),
             kept_salts: 0,
             name: "<Unnamed Server>".to_string(),
-            heartbeat_url: "<heartbeat URL>".into(),
+            heartbeat_url: String::new(),
             heartbeat_spacing: Duration::from_secs(5),
             heartbeat_timeout: Duration::from_secs(5),
             port: 25565,
@@ -114,6 +122,10 @@ impl Default for Config {
             public: false,
             operators: HashSet::new(),
             motd: "Running on Honeybit".into(),
+            max_message_length: 256,
+            message_format: "&8[&7{username}&8] &f{message}".to_string(),
+            join_format: "&2[&a+&2] &f{username}".to_string(),
+            leave_format: "&4[&c-&4] &f{username}".to_string(),
         }
     }
 }

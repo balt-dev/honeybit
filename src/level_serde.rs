@@ -1,15 +1,16 @@
 //! Handles the reading and writing of a level.
 #![allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
 
-use std::{io::{self, Cursor, ErrorKind, Read, Seek, SeekFrom, Write}, iter};
+use std::{io::{self, Cursor, ErrorKind, Read, Seek, Write}, iter};
+
 use arrayvec::ArrayVec;
-use codepage_437::{BorrowFromCp437, ToCp437, CP437_WINGDINGS};
-use flate2::{read::GzDecoder, write::GzEncoder, Compression};
+use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
+use codepage_437::{BorrowFromCp437, CP437_WINGDINGS, ToCp437};
+use flate2::{Compression, read::GzDecoder, write::GzEncoder};
 use jaded::Parser;
 use mint::Vector3;
-use crate::packets::{x16, Location};
-use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
 
+use crate::packets::{Location, x16};
 use crate::world::{LevelData, WorldData};
 
 /// An instance of Java world data.
@@ -61,15 +62,14 @@ impl WorldData {
     pub fn import(mut stream: impl Read + Seek) -> io::Result<WorldData> {
         // Read the compressed data length
         let mut data_len_buf = [0; 4];
-        let compressed_len = stream.seek(SeekFrom::End(-4))?;
-        stream.read_exact(&mut data_len_buf)?;
-        stream.rewind()?;
-        let data_len = u32::from_be_bytes(data_len_buf);
+        stream.read_exact(&mut data_len_buf).map_err(|err| invalid!("Could not read file: {err}"))?;
+        stream.rewind().map_err(|err| invalid!("Could not rewind head: {err}"))?;
+        let data_len = u32::from_le_bytes(data_len_buf);
 
         // Read the gzipped data into a buffer
-        let mut reader = GzDecoder::new(stream.take(compressed_len));
+        let mut reader = GzDecoder::new(stream);
         let mut buf = Vec::with_capacity(data_len as usize);
-        reader.read_to_end(&mut buf)?;
+        reader.read_to_end(&mut buf).map_err(|err| invalid!("Could not unzip data: {err}"))?;
 
         // Find the start of the Java object
         let start = buf.windows(2).position(|win| *win == [0xac, 0xed]).ok_or(invalid!("Could not find Java object"))?;
@@ -106,7 +106,7 @@ impl WorldData {
     /// - Magic: `b"HONEYLV"`
     /// - File version: `u8`
     /// - World dimensions: `[u16; 3]`
-    /// - Spawn position: `[x16; 3]`
+    /// - Spawn position: `[u16; 3]` (fixed point, 5 bits after the decimal)
     /// - Spawn rotation: `[u8; 2]`
     /// - Level name length: `u8` (less than 64)
     /// - Level name: `[u8]` (CP437-encoded string)
@@ -138,10 +138,10 @@ impl WorldData {
             .map_err(|err| invalid!("Failed to read level dimensions: {err}"))?;
         let dimensions = Vector3::<u16>::from(dimensions);
 
-        let mut spawn_position = [0i16; 3];
-        stream.read_i16_into::<BigEndian>(&mut spawn_position)
+        let mut spawn_position = [0u16; 3];
+        stream.read_u16_into::<BigEndian>(&mut spawn_position)
             .map_err(|err| invalid!("Failed to read player spawn position: {err}"))?;
-        let position = Vector3::<x16>::from(spawn_position.map(x16::from_num));
+        let position = Vector3::<x16>::from(spawn_position.map(x16::from_bits));
 
         let mut yaw_pitch = [0u8; 2];
         stream.read_exact(&mut yaw_pitch)
@@ -168,7 +168,7 @@ impl WorldData {
 
         // Unzip the data
         let mut decoder = GzDecoder::new(stream);
-        decoder.read_exact(&mut raw_data)
+        decoder.read_to_end(&mut raw_data)
             .map_err(|err| invalid!("Failed to decode level data: {err}"))?;
 
         Ok( WorldData {
@@ -206,6 +206,8 @@ impl WorldData {
         if cp437_name.len() > 64 {
             return Err(invalid!("Failed to write level name: name must not be larger than 64 bytes"));
         }
+        stream.write_u8(cp437_name.len() as u8)
+            .map_err(|err| invalid!("Failed to write level name: {err}"))?;
         stream.write_all(&cp437_name)
             .map_err(|err| invalid!("Failed to write level name: {err}"))?;
         // Write the level data

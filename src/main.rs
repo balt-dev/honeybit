@@ -2,7 +2,7 @@
 
 #![doc = include_str!("../README.md")]
 
-mod network;
+mod server;
 mod player;
 mod structs;
 mod world;
@@ -17,18 +17,21 @@ use std::{
     fs::File,
     io::{ErrorKind, Read, Write},
     path::Path,
-    time::{Duration},
-    ffi::OsStr
+    ffi::OsStr,
+    sync::Arc,
+    collections::BTreeMap
 };
 use chrono::Local;
 use serde::{Deserialize, Serialize};
 use simplelog::{ColorChoice, TerminalMode};
 use crate::{
     world::{WorldData, World},
-    network::IdleServer,
+    server::IdleServer,
     structs::Config,
 };
 use dirs::data_local_dir;
+use parking_lot::{Condvar, Mutex};
+use dynfmt::{Format, curly::SimpleCurlyFormat};
 
 #[macro_use]
 extern crate log;
@@ -45,6 +48,8 @@ async fn main() -> ExitCode {
         };
         path.parent().expect("executable path always has a parent").to_path_buf()
     };
+
+    let new_local_data = !path.exists();
     
     let now = Local::now();
 
@@ -82,13 +87,21 @@ async fn main() -> ExitCode {
             log_file
         ),
         simplelog::TermLogger::new(
-            simplelog::LevelFilter::Error,
+            if cfg!(debug_assertions) {
+                simplelog::LevelFilter::Debug
+            } else {
+                simplelog::LevelFilter::Info
+            },
             simplelog::Config::default(),
             TerminalMode::Stderr,
             ColorChoice::Auto
         )
     ]).expect("no logger has been initialized yet");
-    
+
+    if new_local_data {
+        info!("Created new local directory at {}. Check your config file!", path.display());
+    }
+
     let res: Result<(), Box<dyn Error>> = inner_main(&path).await.map_err(Into::into);
     let Err(err) = res else { return ExitCode::SUCCESS; };
     error!("~~~ ENCOUNTERED FATAL ERROR ~~~");
@@ -106,11 +119,11 @@ macro_rules! try_with_context {
         }
     };
     (;error $msg: literal $err: ident $($($fmt: expr),+)?) => {
-        Err(format!($msg, $err $(,$($fmt),+)?))?;
+        Err(format!($msg, $($($fmt),+,)? $err ))?;
         unreachable!()
     };
     (;warn $msg: literal $err: ident $($($fmt: expr),+)?) => {
-        warn!($msg, $err $(, $($fmt),+)?);
+        warn!($msg, $($($fmt),+,)? $err );
         continue;
     }
 }
@@ -124,23 +137,39 @@ async fn inner_main(path: &Path) -> Result<(), Box<dyn Error>> {
 
     let config = load_config(path)?;
 
+    if config.heartbeat_url.is_empty() {
+        info!("Heartbeat URL is empty, not connecting.");
+    } else if config.kept_salts == 0 && config.public {
+        warn!("You are not verifying users AND publicly hosting the server.");
+        warn!("Ensure you have other means of verifying users,");
+        warn!("or you WILL have random people logging in as operators!");
+    }
+
     let worlds = load_worlds(path).await?;
     
     let server: IdleServer = IdleServer {
         worlds,
         config,
     };
-    
-    let _handle = try_with_context!(
-        server.start().await;
+
+    let stop_notifier = Arc::new(Condvar::new());
+    let handle = try_with_context!(
+        server.start(stop_notifier.clone()).await;
         error "Startup: {}"
     );
 
-    
-    
-    tokio::time::sleep(Duration::MAX).await;
-    
-    unreachable!("the program should not be running for 500 billion years")
+    if let Err(err) = ctrlc_async::set_async_handler(async move {
+        handle.stop().await;
+    }) {
+        warn!("Failed to set CTRL-C handler: {err}");
+        warn!("Server will not gracefully shut down unless you do /stop.");
+    }
+
+    let mutex = Mutex::new(());
+    let mut lock = mutex.lock();
+    stop_notifier.wait(&mut lock);
+
+    Ok(())
 }
 
 fn load_config(path: &Path) -> Result<Config, Box<dyn Error>> {
@@ -160,6 +189,20 @@ fn load_config(path: &Path) -> Result<Config, Box<dyn Error>> {
         Config::deserialize(toml::Deserializer::new(&config_string));
         error "Deserializing config file: {}"
     );
+
+    // Validate format strings
+    try_with_context!(
+        SimpleCurlyFormat.format(&config.message_format, BTreeMap::from([("username", ""), ("message", "")]));
+        error "Invalid configured message format string: {}"
+    );
+    try_with_context!(
+        SimpleCurlyFormat.format(&config.join_format, BTreeMap::from([("username", "")]));
+        error "Invalid configured join format string: {}"
+    );
+    try_with_context!(
+        SimpleCurlyFormat.format(&config.leave_format, BTreeMap::from([("username", "")]));
+        error "Invalid configured leave format string: {}"
+    );
     config.path = config_path;
     Ok(config)
 }
@@ -172,14 +215,15 @@ async fn load_worlds(path: &Path) -> Result<HashMap<String, World>, Box<dyn Erro
         error "Failed to open worlds directory: {}"
     );
     
-    let mut world_map = HashMap::new();
+    let mut world_map: HashMap<String, World> = HashMap::new();
     
     for world in worlds {
         let world = try_with_context!(world; error "Failed to read worlds directory: {}");
         let mut path = world.path();
 
         // For windows users
-        if path.file_name() == Some(OsStr::new("desktop.ini")) 
+        if path.file_name() == Some(OsStr::new("desktop.ini"))
+            // Ignore backups
             || path.extension().is_some_and(|ext| ext.as_encoded_bytes().ends_with(b"~"))
         {
             continue
@@ -199,8 +243,8 @@ async fn load_worlds(path: &Path) -> Result<HashMap<String, World>, Box<dyn Erro
             let old_path = path.clone();
             path.set_extension("hbit");
             let file = try_with_context!(
-                File::open(&path);
-                warn "Failed to open {}: {}"; path.display()
+                File::create(&path);
+                warn "Failed to create {}: {}"; path.display()
             );
             try_with_context!(
                 world_data.store(file);
@@ -216,18 +260,47 @@ async fn load_worlds(path: &Path) -> Result<HashMap<String, World>, Box<dyn Erro
         }
 
         let world = World::from_data(world_data, path.clone());
-        let name = {
+        let mut name = {
             let lock = world.data.lock().await;
             lock.name.clone()
         };
 
-        if let Some(occupied) = world_map.insert(name.clone(), world) {
-            warn!(
-                "Two worlds have the same name of {name}:\n- {}\n- {}",
-                path.display(),
-                occupied.filepath.display()
-            );
+        if let Some(occupied) = world_map.get(&name) {
+            warn!("Two worlds have the same name of {name}:");
+            warn!("- {}", path.display());
+            warn!("- {}", occupied.filepath.display());
+            warn!("Renaming {}...", path.display());
+            let mut counter = 0;
+            let mut new_name = name.clone() + " (1)";
+            while world_map.contains_key(&new_name) {
+                counter += 1;
+                let new_suf = format!(" ({counter})");
+                new_name = name.clone() + &new_suf;
+            }
+            warn!("Renamed to {new_name}");
+            name = new_name;
+            {
+                let mut lock = occupied.data.lock().await;
+                lock.name.clone_from(&name);
+                let backup_path = path.with_extension("hbit~");
+                try_with_context!(
+                    fs::copy(&path, backup_path);
+                    warn "Failed to copy {}: {}"; path.display()
+                );
+                let mut file = try_with_context!(
+                    File::create(&path);
+                    warn "Failed to open {}: {}"; path.display()
+                );
+                try_with_context!(
+                    lock.store(&mut file);
+                    warn "Failed to save to {}: {}"; path.display()
+                );
+            }
         }
+
+        info!("Loaded world \"{name}\" from {}", path.display());
+
+        world_map.insert(name, world);
     }
     
     Ok(world_map)
@@ -244,14 +317,26 @@ fn set_up_defaults(path: &Path) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+static DEFAULT_WORLD: &[u8] = include_bytes!("default.hbit");
+
 fn make_worlds(path: &Path) -> Result<(), Box<dyn Error>> {
     let world_dir = path.join("worlds");
     if !world_dir.exists() {
+        // Create world directory
         try_with_context!(
-            fs::create_dir(world_dir);
+            fs::create_dir(&world_dir);
             error "Creating worlds directory: {}"
         );
         // Load default world into it
+        let default_path = world_dir.join("default.hbit");
+        let mut file = try_with_context!(
+            File::create(default_path);
+            error "Creating default world file: {}"
+        );
+        try_with_context!(
+            file.write_all(DEFAULT_WORLD);
+            error "Writing default world: {}"
+        );
     }
     Ok(())
 }
@@ -285,6 +370,10 @@ fn make_config(path: &Path) -> Result<(), Box<dyn Error>> {
             ("max_players", "The maximum amount of players on the server."),
             ("public", "Whether the server will show as public on the heartbeat URLs corresponding server list."),
             ("motd", "The server's MOTD."),
+            ("max_message_length", "The maximum length of a sent message. Messages above this threshold will be clipped."),
+            ("message_format", "The string used to format messages.\n{username} and {message} must be specified, or the server will error on startup."),
+            ("join_format", "The string used to format join notifications.\n{username} must be specified, or the server will error on startup."),
+            ("leave_format", "The string used to format leave notifications.\n{username} must be specified, or the server will error on startup."),
             ("[banned_ips]", "A mapping of IPs to ban reasons."),
             ("[banned_users]", "A mapping of usernames to ban reasons."),
         ];
