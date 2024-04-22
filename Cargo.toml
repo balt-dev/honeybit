@@ -30,7 +30,6 @@ dirs = "5"
 ctrlc-async = "3"
 bitflags = "2"
 futures = "0.3"
-dynfmt = { version = "0.1", features = ["curly"] }
 
 [dependencies.serde]
 version = "1"

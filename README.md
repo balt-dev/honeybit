@@ -17,8 +17,14 @@ Roadmap:
   - [x] /locate
   - [x] /world save (op)
   - [x] /players
+- [ ] Per-world permissions on block breaking
 - [ ] World generation
   - [ ] Superflat
   - [ ] Voronoi + Perlin (optional)
   - [ ] FBM noisemap (optional)
+  - Commands (op)
+    - [ ] /world gen
+    - [ ] /world delete
+    - [ ] /world default
+    - [ ] /world spawnpoint
 - [ ] Clean up code (optional)

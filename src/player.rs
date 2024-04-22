@@ -13,7 +13,6 @@ use std::{
 use std::collections::BTreeMap;
 use std::sync::OnceLock;
 use codepage_437::{FromCp437, CP437_WINGDINGS, ToCp437, Cp437Error};
-use dynfmt::{Format, SimpleCurlyFormat};
 use itertools::Itertools;
 use pollster::FutureExt as _;
 use crate::{
@@ -118,6 +117,8 @@ impl WeakPlayer {
         pub async fn notify_move(&self, id: i8, location: Location) => NotifyMove;
         /// Notifies the player of the server's supported protocol extensions.
         pub async fn send_ext_info(&self) => NotifyExtensions;
+        /// Sets the player's operator status.
+        pub async fn notify_operator(&self, operator: bool) => SetOperator;
     }
 
     pub fn any_dropped(&self) -> bool {
@@ -168,6 +169,7 @@ pub enum Command {
     NotifyJoin { id: i8, location: Location, name: String },
     Message { message: String },
     NotifyExtensions,
+    SetOperator { operator: bool }
 }
 
 impl Drop for Player {
@@ -260,25 +262,17 @@ impl WeakPlayer {
                     }
                     let username = {
                         let mut conn_lock = server.connected_players.lock().await;
-                        let name = gb!(self.username).get().cloned().unwrap_or_default();
-                        conn_lock.remove(&name);
+                        let name = gb!(self.username).get().cloned();
+                        if let Some(ref name) = name {
+                            conn_lock.remove(name);
+                        }
                         name
                     };
 
-                    let message = {
-                        let conf = server.config.lock();
-                        SimpleCurlyFormat.format(&conf.leave_format, BTreeMap::from([
-                            ("username", &username)
-                        ]))
-                            .map(|v| v.to_string())
-                            .map_err(|e| format!("{e}")) // Do this to remove the borrow in the error
-                    }.unwrap_or_else(|e| {
-                        warn!("Failed to format leave message: {e}");
-                        warn!("Falling back to default...");
-                        format!("&4[&c-&4] &f{username}")
-                    });
-
-                    tokio::spawn(async move {server.send_message(message).await;});
+                    if let Some(username) = username {
+                        let message = format!("&4[&c-&4] &f{username}");
+                        tokio::spawn(async move { server.send_message(message).await; });
+                    }
 
                     gb!(self.connected).store(false, Ordering::Relaxed);
                     break;
@@ -318,18 +312,7 @@ impl WeakPlayer {
 
                     gb!(&self.username).get_or_init(|| username.clone());
 
-                    let message = {
-                        let conf = server.config.lock();
-                        SimpleCurlyFormat.format(&conf.join_format, BTreeMap::from([
-                            ("username", &username)
-                        ]))
-                            .map(|v| v.to_string())
-                            .map_err(|e| format!("{e}")) // Do this to remove the borrow in the error
-                    }.unwrap_or_else(|e| {
-                        warn!("Failed to format join message: {e}");
-                        warn!("Falling back to default...");
-                        format!("&2[&a+&2] &f{username}")
-                    });
+                    let message = format!("&2[&a+&2] &f{username}");
 
                     server.send_message(message).await;
 
@@ -432,6 +415,11 @@ impl WeakPlayer {
                 Command::NotifyExtensions => {
                     let _ = packet_send.send(
                         Outgoing::ExtInfoEntry
+                    ).await;
+                }
+                Command::SetOperator { operator } => {
+                    let _ = packet_send.send(
+                        Outgoing::UpdateUser { operator }
                     ).await;
                 }
             }
@@ -589,6 +577,15 @@ impl WeakPlayer {
                     }
 
                     if !append {
+                        let operator = {
+                            let conf = server.config.lock();
+                            let username_arc = self.username.upgrade();
+                            username_arc.is_some_and(
+                                |name| name.get().is_some_and(
+                                    |name| conf.operators.contains(name)
+                                )
+                            )
+                        };
 
                         // Process commands
                        if message_buffer.starts_with('/') {
@@ -600,18 +597,11 @@ impl WeakPlayer {
                        }
 
                         let username = gb!(&self.username).get().cloned().unwrap_or_default();
-                        let message = {
-                            let conf = server.config.lock();
-                            SimpleCurlyFormat.format(&conf.message_format, BTreeMap::from([
-                                ("username", &username), ("message", &message_buffer)
-                            ]))
-                                .map(|v| v.to_string())
-                                .map_err(|e| format!("{e}")) // We do this to remove the borrow in the error
-                        }.unwrap_or_else(|e| {
-                            warn!("Failed to format chat message: {e}");
-                            warn!("Falling back to default...");
+                        let message = if operator {
+                            format!("&3[&b{username}&3] &f{message_buffer}")
+                        } else {
                             format!("&8[&7{username}&8] &f{message_buffer}")
-                        });
+                        };
                         server.send_message(message).await;
                         message_buffer = String::new();
                     }
@@ -625,6 +615,7 @@ impl WeakPlayer {
     }
 
     /// Executes a single command.
+    #[allow(clippy::too_many_lines)]
     async fn execute_command(&self, raw_message: String, server: RunningServer) -> Result<(), String> {
 
         let operator = {
@@ -647,7 +638,7 @@ impl WeakPlayer {
                     };
                     let lock = server.worlds.lock().await;
                     let Some(world) = lock.get(world_name).cloned() else {
-                        return Err(format!("World {world_name} doesn't exist"))
+                        return Err(format!("World \"{world_name}\" doesn't exist"))
                     };
                     self.send_to(world).await;
                 },
@@ -663,16 +654,17 @@ impl WeakPlayer {
                 },
                 Some("save") if operator => {
                     let Some(world) = self.world.upgrade() else { return Ok(()) };
-                    let lock = world.lock();
-                    let name = lock.data.lock().await.name.clone();
-                    server.send_message(format!("&6[&e*&6] Saving world {name}...")).await;
-                    if let Err(err) = lock.save().await {
+                    let data = world.lock().data.clone();
+                    let name = data.lock().await.name.clone();
+                    server.send_message(format!("&6[&e@&6] &fSaving world \"{name}\"...")).await;
+                    let world = world.lock().clone();
+                    if let Err(err) = world.save().await {
                         server.send_message("&4[&c!&4] Failed to save! See logs for details.").await;
                         warn!("Failed to save world \"{name}\": {err}");
                         return Ok(());
                     };
                     info!("Saved world \"{name}\"");
-                    server.send_message("&6[&e*&6] World saved!".to_string()).await;
+                    server.send_message("&6[&e@&6] &fWorld saved!".to_string()).await;
                 }
                 Some(cmd) => return Err(format!("Invalid subcommand {cmd}")),
                 None => {
@@ -700,10 +692,8 @@ impl WeakPlayer {
                 let Some(message) = arguments.remainder() else {
                     return Err("Message must be non-empty".into())
                 };
-                player.send_message(format!("&7DM from {own_name}:")).await;
-                player.send_message(format!("&7{message}")).await;
-                self.send_message(format!("&8DM to {own_name}:")).await;
-                self.send_message(format!("&8{message}")).await;
+                self.send_message(format!("&0[&8{own_name} -> {name}&0] &7{message}")).await;
+                player.send_message(format!("&0[&{own_name} -> {name}&0] &7{message}")).await;
             }
             "locate" => {
                 let Some(name) = arguments.next() else {
@@ -713,7 +703,8 @@ impl WeakPlayer {
                 let Some(world) = players.get(name).cloned().and_then(|player| player.world.upgrade()) else {
                     return Err(format!("User {name} is not online"))
                 };
-                self.send_message(format!("{name} is in \"{}\"", world.lock().data.lock().await.name)).await;
+                let world = world.lock().clone();
+                self.send_message(format!("{name} is in \"{}\"", world.data.lock().await.name)).await;
             }
             "players" => {
                 let players = server.connected_players.lock().await;
@@ -728,14 +719,17 @@ impl WeakPlayer {
                 };
                 let players = server.connected_players.lock().await;
 
-                let mut conf = server.config.lock();
-                conf.operators.insert(name.to_string());
+                {
+                    let mut conf = server.config.lock();
+                    conf.operators.insert(name.to_string());
+                }
 
                 if let Some(player) = players.get(name) {
                     player.send_message("&3[&b#&3] &fGranted operator permissions".to_string()).await;
+                    player.notify_operator(true).await;
                 };
 
-                self.send_message(format!("&3[&b#&3] &fGranted operator permissions to {name}")).await
+                self.send_message(format!("&3[&b#&3] &fGranted operator permissions to {name}")).await;
             },
             "deop" if operator => {
                 let Some(name) = arguments.next() else {
@@ -743,14 +737,17 @@ impl WeakPlayer {
                 };
                 let players = server.connected_players.lock().await;
 
-                let mut conf = server.config.lock();
-                conf.operators.remove(name);
+                {
+                    let mut conf = server.config.lock();
+                    conf.operators.remove(name);
+                }
 
                 if let Some(player) = players.get(name) {
                     player.send_message("&3[&b#&3] &fOperator permissions revoked".to_string()).await;
+                    player.notify_operator(false).await;
                 };
 
-                self.send_message(format!("&3[&b#&3] &fRevoked operator permissions from {name}")).await
+                self.send_message(format!("&3[&b#&3] &fRevoked operator permissions from {name}")).await;
             }
             "kick" if operator => {
                 let Some(name) = arguments.next() else {
@@ -761,17 +758,17 @@ impl WeakPlayer {
                     return Err("Player is offline".into())
                 };
                 player.notify_disconnect(
-                    format!("Kicked: {}", arguments.remainder().unwrap_or("No reason given".into()))
+                    format!("Kicked: {}", arguments.remainder().unwrap_or("No reason given"))
                 ).await;
 
-                self.send_message(format!("&3[&b#&3] &fKicked {name}")).await
+                self.send_message(format!("&3[&b#&3] &fKicked {name}")).await;
             },
             "ban" if operator => {
                 let Some(name) = arguments.next() else {
                     return Err("No username specified".into())
                 };
                 let players = server.connected_players.lock().await;
-                let reason = arguments.remainder().unwrap_or("No reason given".into());
+                let reason = arguments.remainder().unwrap_or("No reason given");
                 if let Some(player) = players.get(name) {
                     player.notify_disconnect(
                         format!("Banned: {reason}")
@@ -787,7 +784,7 @@ impl WeakPlayer {
                 let Some(name) = arguments.next() else {
                     return Err("No username specified".into())
                 };
-                
+
                 self.send_message(format!("&3[&b#&3] &fUnbanned {name}")).await;
 
                 let mut config = server.config.lock();
@@ -796,19 +793,19 @@ impl WeakPlayer {
             "help" => {
                 self.send_message("&3[&bCommand List&3]").await;
                 self.send_message("- /world").await;
-                self.send_message("  - /world join &b<name>").await;
+                self.send_message("  - /world join <name>").await;
                 self.send_message("  - /world list").await;
-                if operator { self.send_message("&e  - /world save").await }
+                if operator { self.send_message("&b  - /world save").await }
                 self.send_message("- /w <user> <message>").await;
                 self.send_message("- /locate <user>").await;
                 self.send_message("- /players").await;
                 if operator {
-                    self.send_message("- /op <name>").await;
-                    self.send_message("- /deop <name>").await;
-                    self.send_message("- /kick <name> [reason]").await;
-                    self.send_message("- /ban <name> [reason]").await;
-                    self.send_message("- /unban <name>").await;
-                    self.send_message("- /stop").await;
+                    self.send_message("&b- /op <name>").await;
+                    self.send_message("&b- /deop <name>").await;
+                    self.send_message("&b- /kick <name> [reason]").await;
+                    self.send_message("&b- /ban <name> [reason]").await;
+                    self.send_message("&b- /unban <name>").await;
+                    self.send_message("&b- /stop").await;
                 }
             }
             _ => return Err(format!("Invalid command {name}"))

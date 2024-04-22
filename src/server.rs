@@ -382,7 +382,10 @@ impl RunningServer {
 
                             trace!("New url: {url}");
 
-                            self.url.get_or_init(|| url);
+                            self.url.get_or_init(|| {
+                                info!("Server URL: {url}");
+                                url
+                            });
                         }
                         Ok(Err(err)) => {
                             warn!("Failed to send heartbeat ping: {err}");

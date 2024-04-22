@@ -32,7 +32,6 @@ use crate::{
 };
 use dirs::data_local_dir;
 use parking_lot::{Condvar, Mutex};
-use dynfmt::{Format, curly::SimpleCurlyFormat};
 
 #[macro_use]
 extern crate log;
@@ -174,7 +173,7 @@ async fn inner_main(path: &Path) -> Result<(), Box<dyn Error>> {
     // Save the server's worlds
     {
         let worlds = handle.worlds.lock().await;
-        for (name, world) in worlds.iter() {
+        for (name, world) in worlds.iter().map(|(name, world)| (name, world.clone())) {
             let Err(err) = world.save().await else {
                 info!("Saved world {name}");
                 continue;
@@ -182,14 +181,14 @@ async fn inner_main(path: &Path) -> Result<(), Box<dyn Error>> {
             warn!("Failed to save world {name}: {err}");
         }
     }
-    
+
     // Save the config
     {
         let config = handle.config.lock();
         let mut buf = String::new();
         if let Err(err) = config.save(&mut buf).and_then(|_| {
             let config_path = path.join("config.toml");
-            let backup_path = config_path.with_extension(".toml~");
+            let backup_path = config_path.with_extension("toml~");
             fs::rename(&config_path, backup_path)?;
             let mut file = File::create(config_path)?;
             file.write_all(buf.as_bytes())
@@ -220,20 +219,7 @@ fn load_config(path: &Path) -> Result<Config, Box<dyn Error>> {
         Config::deserialize(toml::Deserializer::new(&config_string));
         error "Deserializing config file: {}"
     );
-
-    // Validate format strings
-    try_with_context!(
-        SimpleCurlyFormat.format(&config.message_format, BTreeMap::from([("username", ""), ("message", "")]));
-        error "Invalid configured message format string: {}"
-    );
-    try_with_context!(
-        SimpleCurlyFormat.format(&config.join_format, BTreeMap::from([("username", "")]));
-        error "Invalid configured join format string: {}"
-    );
-    try_with_context!(
-        SimpleCurlyFormat.format(&config.leave_format, BTreeMap::from([("username", "")]));
-        error "Invalid configured leave format string: {}"
-    );
+    
     config.path = config_path;
     Ok(config)
 }

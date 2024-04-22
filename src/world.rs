@@ -385,10 +385,10 @@ impl World {
         }
     }
 
-    pub async fn save(&self) -> io::Result<()> {
+    pub async fn save(self) -> io::Result<()> {
         let Some(path) = self.filepath.as_ref() else { return Ok(()) };
         let data = self.data.lock().await;
-        let backup_path = path.with_extension(".hbit~");
+        let backup_path = path.with_extension("hbit~");
         fs::rename(path, backup_path)?;
         let file = File::create(path)?;
         data.store(file)?;
