@@ -4,10 +4,7 @@
 // TODO: Refactor this to not be one giant file
 
 use crate::{
-    packets::{Outgoing, OutgoingPacketType},
-    world::World,
-    structs::Config,
-    player::{Player, WeakPlayer}
+    packets::{Outgoing, OutgoingPacketType}, player::{Player, WeakPlayer}, structs::Config, world::World, worldgen::WorldGenerator
 };
 use rand::{
     rngs::StdRng,
@@ -95,6 +92,8 @@ pub struct RunningServer {
     pub handle: mpsc::Sender<ServerCommand>,
     /// The server's URL.
     pub url: Arc<OnceLock<String>>,
+    /// A map of names to world generators.
+    pub generators: Arc<Mutex<HashMap<String, Box<dyn WorldGenerator>>>>
 }
 
 impl RunningServer {
@@ -123,6 +122,7 @@ impl RunningServer {
             last_salts: Arc::new(Mutex::default()),
             handle: tx,
             url: Arc::default(),
+            generators: Arc::default()
         })
     }
 

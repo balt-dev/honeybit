@@ -9,6 +9,7 @@ mod structs;
 mod world;
 mod level_serde;
 mod packets;
+mod worldgen;
 
 use std::{
     error::Error,
@@ -20,10 +21,9 @@ use std::{
     path::Path,
     ffi::OsStr,
     sync::Arc,
-    collections::BTreeMap
 };
 use chrono::Local;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use simplelog::{ColorChoice, TerminalMode};
 use crate::{
     world::{WorldData, World},
@@ -69,7 +69,7 @@ async fn main() -> ExitCode {
         }
     }
 
-    let mut log_name = now.to_rfc3339().replace(":", "_");
+    let log_name = now.to_rfc3339().replace(":", "_");
 
     let log_path = logs_path.join(format!("{}.log", log_name));
     

@@ -10,11 +10,9 @@ use std::{
     sync::atomic::AtomicBool,
     sync::Weak
 };
-use std::collections::BTreeMap;
 use std::sync::OnceLock;
 use codepage_437::{FromCp437, CP437_WINGDINGS, ToCp437, Cp437Error};
 use itertools::Itertools;
-use pollster::FutureExt as _;
 use crate::{
     packets::{
         IncomingPacketType as _,
@@ -678,6 +676,37 @@ impl WeakPlayer {
                     };
                     info!("Saved world \"{name}\"");
                     server.send_message("&6[&e@&6] &fWorld saved!".to_string()).await;
+                },
+                Some("create") if operator => {
+                    let Some(length) = arguments.next() else { return Err("No length specified".into()) };
+                    let Some(width) = arguments.next() else { return Err("No width specified".into()) };
+                    let Some(height) = arguments.next() else { return Err("No height specified".into()) };
+                    let Some(generator) = arguments.next() else { return Err("No generator specified, see /world generators".into()) };
+                    let seed: u64 = match arguments.next() {
+                        Some(seed) => seed.parse().unwrap_or_else(
+                            |_| fxhash::hash64(seed.as_bytes())
+                        ),
+                        None => rand::random()
+                    };
+                    
+                    let length: u16 = length.parse().map_err(|err| format!("Invalid length: {err}"))?;
+                    let width: u16 = width.parse().map_err(|err| format!("Invalid width: {err}"))?;
+                    let height: u16 = height.parse().map_err(|err| format!("Invalid height: {err}"))?;
+                    let dimensions = Vector3 { x: length, z: width, y: height };
+
+                    let lock = server.generators.lock();
+                    let Some(generator) = lock.get(generator) else { return Err("Invalid generator {generator}".into())};
+
+                }
+                Some("generators") if operator => {
+                    self.send_message("&6[&eWorld Generators&6]").await;
+                    let keys: Vec<_> = {
+                        let lock = server.generators.lock();
+                        lock.keys().cloned().collect()
+                    };
+                    for gen in keys {
+                        self.send_message(format!("- {gen}")).await;
+                    }
                 }
                 Some(cmd) => return Err(format!("Invalid subcommand {cmd}")),
                 None => {
@@ -810,7 +839,11 @@ impl WeakPlayer {
                 self.send_message("- /world").await;
                 self.send_message("  - /world join <name>").await;
                 self.send_message("  - /world list").await;
-                if operator { self.send_message("&b  - /world save").await }
+                if operator {
+                    self.send_message("&b  - /world save [name]").await;
+                    self.send_message("&b  - /world generators").await;
+                    self.send_message("&b  - /world create <length> <width> <height> <generator> [seed]").await
+                }
                 self.send_message("- /w <user> <message>").await;
                 self.send_message("- /locate <user>").await;
                 self.send_message("- /players").await;
