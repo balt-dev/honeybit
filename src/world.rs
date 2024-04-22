@@ -246,6 +246,9 @@ impl World {
             lock.spawn_point
         };
 
+        debug!("{default_location:?}");
+
+        player.notify_join(-1, default_location, player_name.clone()).await;
         player.set_location(default_location).await;
 
         {
@@ -379,7 +382,7 @@ impl World {
             filepath: Arc::new(Some(path)),
             players: Arc::default(),
             available_ids: Arc::new(Mutex::new(
-                (i8::MIN..=i8::MAX).collect()
+                (u8::MIN ..= u8::MAX - 1).map(|v| v as i8).collect()
             )),
             data: Arc::new(TokioMutex::new(data)),
         }

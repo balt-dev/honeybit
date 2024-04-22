@@ -105,7 +105,7 @@ impl RunningServer {
         pub async fn stop(&self) => Stop;
     }
 
-    fn collect_garbage(&self) {
+    pub fn collect_garbage(&self) {
         let Ok(mut lock) = self.connected_players.try_lock() else { return; };
         lock.retain(|_, player| !player.any_dropped());
     }
@@ -149,7 +149,7 @@ impl RunningServer {
                 ServerCommand::Stop => {
                     info!("Stopping server...");
                     let lock = self.connected_players.lock().await;
-                    let mut futures= Vec::new();
+                    let mut futures = Vec::new();
                     for player in lock.values().cloned() {
                         futures.push(async move {
                             player.notify_disconnect("Server closed").await;

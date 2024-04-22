@@ -1,5 +1,2 @@
 target/
-logs/
-config.toml
-
-server_level.dat
+data/

@@ -107,8 +107,6 @@ impl WeakPlayer {
         pub async fn notify_left(&self, id: i8) => NotifyLeave;
         /// Sends the player a message in chat.
         pub async fn send_message(&self, message: String) => Message;
-        /// Notifies the player that it has disconnected.
-        pub async fn notify_disconnect(&self, reason: String) => Disconnect;
         /// Sends the player to a world.
         pub async fn send_to(&self, world: World) => SendTo;
         /// Sets a block for the player.
@@ -119,6 +117,14 @@ impl WeakPlayer {
         pub async fn send_ext_info(&self) => NotifyExtensions;
         /// Sets the player's operator status.
         pub async fn notify_operator(&self, operator: bool) => SetOperator;
+    }
+    
+    /// Notifies the player that it has disconnected.
+    #[inline]
+    pub async fn notify_disconnect(&self, reason: impl Into<String>) {        
+        if let Some(handle) = self.handle.upgrade() {
+            let _ = handle.send(Command::Disconnect{ reason: reason.into() }).await;
+        }
     }
 
     pub fn any_dropped(&self) -> bool {
@@ -174,14 +180,7 @@ pub enum Command {
 
 impl Drop for Player {
     fn drop(&mut self) {
-        if Arc::strong_count(&self.id) == 1
-            && Arc::strong_count(&self.world) == 1
-            && Arc::strong_count(&self.username) == 1
-            && Arc::strong_count(&self.location) == 1
-        {
-            trace!("Player {} dropped", self.uuid);
-            self.downgrade().notify_disconnect("Player dropped (if you're seeing this, a thread likely panicked)").block_on();
-        }
+        // Empty, still makes sure it runs so players aren't dropped until the scope ends
     }
 }
 
@@ -279,51 +278,62 @@ impl WeakPlayer {
                 }
                 Command::Initialize { username } => {
                     
-                    let (name, motd, operator): (String, String, bool);
+                    let (name, motd, operator, max_players): (String, String, bool, usize);
                     #[allow(clippy::assigning_clones)] // Doesn't work with non-mutable variables
                     let ban_reason = {
                         let lock = server.config.lock();
                         name = lock.name.clone();
                         motd = lock.motd.clone();
                         operator = lock.operators.contains(&username);
+                        max_players = lock.max_players;
                         lock.banned_users.get(&username).map(|reason| format!("Banned: {reason}"))
                     };
                     
-                    if let Some(reason) = ban_reason {
-                        debug!("Banned player {username} attempted to join");
-                        let () = self.clone().notify_disconnect(reason).await;
+                    server.collect_garbage();
+                    let player_count = server.connected_players.lock().await.len();
+
+                    let res = packet_send.send(Outgoing::ServerIdentification {
+                            version: 7,
+                            name,
+                            motd,
+                            operator,
+                        }
+                    ).await;
+
+                    if player_count >= max_players {
+                        self.notify_disconnect("Server is full").await;
                         continue;
                     }
-                    let res = packet_send.send(Outgoing::ServerIdentification {
-                        version: 7,
-                        name,
-                        motd,
-                        operator,
+                    
+                    if let Some(reason) = ban_reason {
+                        self.notify_disconnect(reason).await;
+                        continue;
                     }
-                    ).await;
+
                     if let Err(e) = res {
                         self.notify_disconnect(format!("Connection failed: {e}")).await;
-                        return;
+                        continue;
                     }
 
                     if username.find(|c: char| c.is_ascii_whitespace()).is_some() {
                         self.notify_disconnect("Username cannot have whitespace".to_string()).await;
+                        continue;
                     }
 
                     gb!(&self.username).get_or_init(|| username.clone());
 
                     let message = format!("&2[&a+&2] &f{username}");
 
-                    server.send_message(message).await;
-
                     {
                         let mut lock = server.connected_players.lock().await;
                         if lock.contains_key(&username) {
-                            let () = self.clone().notify_disconnect("Player with same username already connected").await;
+                            self.notify_disconnect("Player with same username already connected").await;
                             continue;
                         }
                         lock.insert(username, self.clone());
                     }
+
+                    server.send_message(message).await;
 
                     self.send_to(default_world.clone()).await;
                 }
@@ -588,13 +598,16 @@ impl WeakPlayer {
                         };
 
                         // Process commands
-                       if message_buffer.starts_with('/') {
-                           if let Err(error_message) = self.execute_command(message_buffer, server.clone()).await {
-                               self.send_message(format!("&4[&c!&4] &f{error_message}")).await;
-                           }
+                        if message_buffer.starts_with('/') {
+                            match self.execute_command(message_buffer, server.clone()).await {
+                                Ok(b) => if b { break },
+                                Err(error_message) => {
+                                    self.send_message(format!("&4[&c!&4] &f{error_message}")).await;
+                                }
+                            }
                            message_buffer = String::new();
                            continue;
-                       }
+                        }
 
                         let username = gb!(&self.username).get().cloned().unwrap_or_default();
                         let message = if operator {
@@ -616,7 +629,7 @@ impl WeakPlayer {
 
     /// Executes a single command.
     #[allow(clippy::too_many_lines)]
-    async fn execute_command(&self, raw_message: String, server: RunningServer) -> Result<(), String> {
+    async fn execute_command(&self, raw_message: String, server: RunningServer) -> Result<bool, String> {
 
         let operator = {
             let conf = server.config.lock();
@@ -653,7 +666,7 @@ impl WeakPlayer {
                     }
                 },
                 Some("save") if operator => {
-                    let Some(world) = self.world.upgrade() else { return Ok(()) };
+                    let Some(world) = self.world.upgrade() else { return Ok(false) };
                     let data = world.lock().data.clone();
                     let name = data.lock().await.name.clone();
                     server.send_message(format!("&6[&e@&6] &fSaving world \"{name}\"...")).await;
@@ -661,7 +674,7 @@ impl WeakPlayer {
                     if let Err(err) = world.save().await {
                         server.send_message("&4[&c!&4] Failed to save! See logs for details.").await;
                         warn!("Failed to save world \"{name}\": {err}");
-                        return Ok(());
+                        return Ok(false);
                     };
                     info!("Saved world \"{name}\"");
                     server.send_message("&6[&e@&6] &fWorld saved!".to_string()).await;
@@ -676,8 +689,10 @@ impl WeakPlayer {
                     }
                 }
             },
-            "stop" if operator =>
-                server.stop().await,
+            "stop" if operator => {
+                server.stop().await;
+                return Ok(true);
+            },
             "w" => {
                 let Some(name) = arguments.next() else {
                     return Err("No username specified".into())
@@ -708,9 +723,9 @@ impl WeakPlayer {
             }
             "players" => {
                 let players = server.connected_players.lock().await;
-                self.send_message("&3[&bWorld List&3]").await;
+                self.send_message("&3[&bPlayer List&3]").await;
                 for name in players.keys() {
-                    self.send_message(format!("- {name}")).await;
+                    self.send_message(name.to_string()).await;
                 }
             }
             "op" if operator => {
@@ -791,7 +806,7 @@ impl WeakPlayer {
                 config.banned_users.remove(name);
             },
             "help" => {
-                self.send_message("&3[&bCommand List&3]").await;
+                self.send_message("&5[&dCommand List&5]").await;
                 self.send_message("- /world").await;
                 self.send_message("  - /world join <name>").await;
                 self.send_message("  - /world list").await;
@@ -810,6 +825,6 @@ impl WeakPlayer {
             }
             _ => return Err(format!("Invalid command {name}"))
         }
-        Ok(())
+        Ok(false)
     }
 }
