@@ -1,7 +1,8 @@
 //! Holds structs pertaining to a world in a server.
 #![allow(clippy::unnecessary_to_owned)] // There are many false positives in this file.
 
-use std::{io, path::PathBuf, sync::{Arc, atomic::Ordering}};
+use std::{fs, io, path::PathBuf, sync::{Arc, atomic::Ordering}};
+use std::fs::File;
 use std::io::{Cursor, Read, Write};
 use arrayvec::ArrayVec;
 use flate2::Compression;
@@ -23,7 +24,7 @@ use crate::packets::Outgoing;
 #[derive(Debug, Clone)]
 pub struct World {
     /// The world's filepath.
-    pub filepath: Arc<PathBuf>,
+    pub filepath: Arc<Option<PathBuf>>,
     /// A hashmap of player IDs to players.
     pub players: Arc<Mutex<IntMap<i8, WeakPlayer>>>,
     /// A list of available player IDs.
@@ -168,7 +169,6 @@ impl World {
     /// Creates a new player in the world. Returns the new ID, or None if the server is full.
     ///
     ///
-    #[inline]
     pub async fn add_player(&self, player: WeakPlayer, packet_send: Sender<Outgoing>) -> Option<i8> {
         self.collect_garbage();
 
@@ -231,7 +231,7 @@ impl World {
 
         let id = self.available_ids.lock().pop()?;
 
-        let player_name = player.username.upgrade()?.lock().clone();
+        let player_name = player.username.upgrade()?.get().cloned()?;
 
         player.id.upgrade()?.store(id, Ordering::Relaxed);
         {
@@ -256,7 +256,7 @@ impl World {
 
             for (id, other) in player_lock.iter().map(|(i, p)| (*i, p.clone())) {
                 let Some(name) = other.username.upgrade() else { continue; };
-                let name = name.lock().clone();
+                let name = name.get().cloned().unwrap_or_default();
                 
                 let other_f = other.clone();
                 let pname_f = player_name.clone();
@@ -376,12 +376,22 @@ impl World {
     /// Constructs a world from a [`WorldData`] and [`PathBuf`].
     pub fn from_data(data: WorldData, path: PathBuf) -> Self {
         Self {
-            filepath: Arc::new(path),
+            filepath: Arc::new(Some(path)),
             players: Arc::default(),
             available_ids: Arc::new(Mutex::new(
                 (i8::MIN..=i8::MAX).collect()
             )),
             data: Arc::new(TokioMutex::new(data)),
         }
+    }
+
+    pub async fn save(&self) -> io::Result<()> {
+        let Some(path) = self.filepath.as_ref() else { return Ok(()) };
+        let data = self.data.lock().await;
+        let backup_path = path.with_extension(".hbit~");
+        fs::rename(path, backup_path)?;
+        let file = File::create(path)?;
+        data.store(file)?;
+        Ok(())
     }
 }

@@ -1,7 +1,10 @@
 use std::collections::{HashMap, HashSet};
+use std::io;
+use std::io::ErrorKind;
 use std::net::{IpAddr, Ipv4Addr};
 use std::path::PathBuf;
 use std::time::Duration;
+use serde::Serialize;
 
 mod duration_float {
     use std::fmt::Formatter;
@@ -127,5 +130,60 @@ impl Default for Config {
             join_format: "&2[&a+&2] &f{username}".to_string(),
             leave_format: "&4[&c-&4] &f{username}".to_string(),
         }
+    }
+}
+
+impl Config {
+    pub fn save(&self, buf: &mut String) -> io::Result<()> {
+        self.serialize(toml::Serializer::pretty(buf))
+            .map_err(|err| io::Error::new(ErrorKind::InvalidData, err))?;
+        // Insert documentation to the config file
+        static COMMENT_MAP: [(&str, &str); 19] = [
+            ("packet_timeout", "How long the server should wait before disconnecting a player, in seconds."),
+            ("ping_spacing", "How often the server sends pings to clients, in seconds."),
+            ("default_world", "The world that players first connect to when joining."),
+            ("operators", "A list of usernames that have operator permissions."),
+            ("kept_salts", "How many \"salts\" to keep in memory.\nSalts are used to verify a user's key.\nIf this is set to 0, then users will not be verified."),
+            ("name", "The server's displayed name."),
+            ("heartbeat_url", "The URL to ping for heartbeat pings.\n\nIf this is left blank, then no heartbeat pings will be sent.\nIf this is left blank AND kept_salts is above 0,\nthe program will exit with an error,\nas it will be impossible for users to join."),
+            ("heartbeat_spacing", "How often heartbeat pings will be sent, in seconds."),
+            ("heartbeat_timeout", "How long the server will wait to hear back from the heartbeat server, in seconds."),
+            ("port", "The port to host the server on."),
+            ("max_players", "The maximum amount of players on the server."),
+            ("public", "Whether the server will show as public on the heartbeat URLs corresponding server list."),
+            ("motd", "The server's MOTD."),
+            ("max_message_length", "The maximum length of a sent message. Messages above this threshold will be clipped."),
+            ("message_format", "The string used to format messages.\n{username} and {message} must be specified, or the server will error on startup."),
+            ("join_format", "The string used to format join notifications.\n{username} must be specified, or the server will error on startup."),
+            ("leave_format", "The string used to format leave notifications.\n{username} must be specified, or the server will error on startup."),
+            ("[banned_ips]", "A mapping of IPs to ban reasons."),
+            ("[banned_users]", "A mapping of usernames to ban reasons."),
+        ];
+
+        let mut concat = Vec::new();
+
+        for line in buf.lines() {
+            let mut commented = false;
+            for (prefix, comment) in COMMENT_MAP {
+                if line.starts_with(prefix) {
+                    for comment_line in comment.lines() {
+                        concat.push("# ");
+                        concat.push(comment_line);
+                        concat.push("\n");
+                    }
+                    commented = !prefix.starts_with('[');
+                    break;
+                }
+            }
+            concat.push(line);
+            concat.push("\n");
+            if commented {
+                concat.push("\n");
+            }
+        }
+
+        *buf = concat.join("");
+
+        Ok(())
     }
 }

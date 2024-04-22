@@ -135,6 +135,7 @@ impl RunningServer {
                     let lock = self.connected_players.lock().await;
                     // If left with an & prefix, vanilla clients will crash
                     let message = message.strip_suffix('&').unwrap_or(&message);
+                    
                     info!("[CHAT] {message}");
 
                     #[allow(clippy::unnecessary_to_owned)] // False positive

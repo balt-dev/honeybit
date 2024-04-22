@@ -1,3 +1,4 @@
+#![feature(str_split_whitespace_remainder)]
 #![warn(clippy::pedantic, clippy::perf, missing_docs)]
 
 #![doc = include_str!("../README.md")]
@@ -140,9 +141,7 @@ async fn inner_main(path: &Path) -> Result<(), Box<dyn Error>> {
     if config.heartbeat_url.is_empty() {
         info!("Heartbeat URL is empty, not connecting.");
     } else if config.kept_salts == 0 && config.public {
-        warn!("You are not verifying users AND publicly hosting the server.");
-        warn!("Ensure you have other means of verifying users,");
-        warn!("or you WILL have random people logging in as operators!");
+        return Err("You are not verifying users AND publicly hosting the server, allowing anyone to log in as an operator or bypass bans. Refusing to start.".into())
     }
 
     let worlds = load_worlds(path).await?;
@@ -158,16 +157,48 @@ async fn inner_main(path: &Path) -> Result<(), Box<dyn Error>> {
         error "Startup: {}"
     );
 
+    let stop_handle = handle.clone();
     if let Err(err) = ctrlc_async::set_async_handler(async move {
-        handle.stop().await;
+        stop_handle.stop().await;
     }) {
         warn!("Failed to set CTRL-C handler: {err}");
         warn!("Server will not gracefully shut down unless you do /stop.");
     }
 
-    let mutex = Mutex::new(());
-    let mut lock = mutex.lock();
-    stop_notifier.wait(&mut lock);
+    {
+        let mutex = Mutex::new(());
+        let mut lock = mutex.lock();
+        stop_notifier.wait(&mut lock);
+    }
+
+    // Save the server's worlds
+    {
+        let worlds = handle.worlds.lock().await;
+        for (name, world) in worlds.iter() {
+            let Err(err) = world.save().await else {
+                info!("Saved world {name}");
+                continue;
+            };
+            warn!("Failed to save world {name}: {err}");
+        }
+    }
+    
+    // Save the config
+    {
+        let config = handle.config.lock();
+        let mut buf = String::new();
+        if let Err(err) = config.save(&mut buf).and_then(|_| {
+            let config_path = path.join("config.toml");
+            let backup_path = config_path.with_extension(".toml~");
+            fs::rename(&config_path, backup_path)?;
+            let mut file = File::create(config_path)?;
+            file.write_all(buf.as_bytes())
+        }) {
+            warn!("Failed to save config: {err}");
+            warn!("To mitigate data loss, config will be dumped to console.");
+            warn!("Current config: {config:?}");
+        }
+    }
 
     Ok(())
 }
@@ -268,7 +299,7 @@ async fn load_worlds(path: &Path) -> Result<HashMap<String, World>, Box<dyn Erro
         if let Some(occupied) = world_map.get(&name) {
             warn!("Two worlds have the same name of {name}:");
             warn!("- {}", path.display());
-            warn!("- {}", occupied.filepath.display());
+            warn!("- {}", occupied.filepath.as_ref().as_ref().expect("worlds loaded from files always have a name").display());
             warn!("Renaming {}...", path.display());
             let mut counter = 0;
             let mut new_name = name.clone() + " (1)";
@@ -352,7 +383,7 @@ fn make_config(path: &Path) -> Result<(), Box<dyn Error>> {
 
         let mut buf = String::new();
         try_with_context!(
-            Config::default().serialize(toml::Serializer::pretty(&mut buf));
+            Config::default().save(&mut buf);
             error "Serializing default configuration: {}"
         );
         // Insert documentation to the config file
