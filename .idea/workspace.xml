@@ -73,6 +73,7 @@
 }]]></component>
   <component name="RecentsManager">
     <key name="MoveFile.RECENT_KEYS">
+      <recent name="$PROJECT_DIR$/data/worlds" />
       <recent name="$PROJECT_DIR$/src" />
       <recent name="$PROJECT_DIR$" />
     </key>
@@ -146,7 +147,7 @@
       <workItem from="1713564464938" duration="69000" />
       <workItem from="1713564554000" duration="69000" />
       <workItem from="1713564625281" duration="40081000" />
-      <workItem from="1713719901153" duration="36838000" />
+      <workItem from="1713719901153" duration="37440000" />
     </task>
     <servers />
   </component>

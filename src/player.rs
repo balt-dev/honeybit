@@ -682,7 +682,7 @@ impl WeakPlayer {
                     let old_name = data.name.clone();
                     server.worlds.lock().await.remove(&old_name);
                     data.name = world_name.to_string();
-                    self.send_message(format!("&2[&b#&2] &fRenamed world to \"{world_name}\".")).await;
+                    self.send_message(format!("&3[&b#&3] &fRenamed world to \"{world_name}\".")).await;
                 }
                 Some("save") if operator => {
                     let Some(world) = self.world.upgrade() else { return Ok(false) };
@@ -784,7 +784,7 @@ impl WeakPlayer {
                     return Err("Message must be non-empty".into())
                 };
                 self.send_message(format!("&0[&8{own_name} -> {name}&0] &7{message}")).await;
-                player.send_message(format!("&0[&{own_name} -> {name}&0] &7{message}")).await;
+                player.send_message(format!("&0[&8{own_name} -> {name}&0] &7{message}")).await;
             }
             "locate" => {
                 if let Some(name) = arguments.next() {
