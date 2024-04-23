@@ -1,6 +1,7 @@
 //! Handles world generation.
 
 use std::{iter, fmt};
+use std::fmt::Display;
 
 use mint::Vector3;
 
@@ -11,7 +12,7 @@ pub trait WorldGenerator: fmt::Debug + Send + Sync {
     /// exactly the length of the volume of the dimensions given.
     /// 
     /// This should never fail.
-    fn generate(&self, dimensions: Vector3<u16>, seed: u64) -> Vec<u8>;
+    fn generate(&self, dimensions: Vector3<u16>, seed: u64) -> Result<Vec<u8>, String>;
 }
 
 /// Generates a superflat world with the specified layers.
@@ -22,21 +23,20 @@ pub struct Superflat {
 }
 
 impl WorldGenerator for Superflat {
-    fn generate(&self, dimensions: Vector3<u16>, _seed: u64) -> Vec<u8> {
-        let slice_size = dimensions.x as usize * dimensions.y as usize;
-        let size = slice_size * dimensions.z as usize;
-        let mut buf = Vec::with_capacity(size);
-        let mut current_height = 0u16;
-        let mut do_break = false;
-        for (block, mut height) in self.layers.iter().copied() {
-            if !current_height.checked_add(height).is_some_and(|add| add <= dimensions.y) {
-                height = current_height - dimensions.y;
-                do_break = true;
+    fn generate(&self, dimensions: Vector3<u16>, _seed: u64) -> Result<Vec<u8>, String> {
+        let slice_size = dimensions.x as usize * dimensions.z as usize;
+        let size = slice_size * dimensions.y as usize;
+        let mut buf = vec![0; size];
+        let mut cursor = 0;
+        for (block, height) in self.layers.iter().copied() {
+            let part_size = slice_size * height as usize;
+            buf[cursor.min(size) .. (cursor + part_size).min(size)].fill(block);
+            cursor += part_size;
+            if cursor > size {
+                buf.truncate(size);
+                break;
             }
-            current_height += height;
-            buf.extend(iter::repeat(block).take(slice_size * height as usize));
-            if do_break { break }
         }
-        buf
+        Ok(buf)
     }
 }

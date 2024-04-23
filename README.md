@@ -17,7 +17,7 @@ Roadmap:
   - [x] /locate
   - [x] /world save (op)
   - [x] /players
-- [ ] Per-world permissions on block breaking
+- [x] Per-world permissions on block breaking
 - [ ] World generation
   - [ ] Superflat
   - [ ] Voronoi + Perlin (optional)

@@ -28,6 +28,8 @@ use tokio::{
 };
 use reqwest::StatusCode;
 use parking_lot::{Condvar, Mutex};
+use crate::worldgen::Superflat;
+
 pub trait SaltExt {
     /// Generate a salt.
     fn salt(&mut self) -> String;
@@ -122,7 +124,11 @@ impl RunningServer {
             last_salts: Arc::new(Mutex::default()),
             handle: tx,
             url: Arc::default(),
-            generators: Arc::default()
+            generators: Arc::new(Mutex::new(HashMap::from([
+                ("default".into(), Box::new(Superflat {
+                    layers: vec![(0x7, 1), (0x1, 6), (0x3, 2), (0x2, 1)],
+                }) as Box<dyn WorldGenerator>)
+            ])))
         })
     }
 

@@ -22,6 +22,8 @@ use std::{
     ffi::OsStr,
     sync::Arc,
 };
+use std::path::PathBuf;
+use std::sync::OnceLock;
 use chrono::Local;
 use serde::Deserialize;
 use simplelog::{ColorChoice, TerminalMode};
@@ -233,8 +235,11 @@ fn load_config(path: &Path) -> Result<Config, Box<dyn Error>> {
     Ok(config)
 }
 
+static WORLD_PATH: OnceLock<PathBuf> = OnceLock::new();
+
 async fn load_worlds(path: &Path) -> Result<HashMap<String, World>, Box<dyn Error>> {
     let world_dir = path.join("worlds");
+    WORLD_PATH.get_or_init(|| world_dir.clone());
     
     let worlds = try_with_context!(
         fs::read_dir(world_dir);
@@ -285,7 +290,7 @@ async fn load_worlds(path: &Path) -> Result<HashMap<String, World>, Box<dyn Erro
             }
         }
 
-        let world = World::from_data(world_data, path.clone());
+        let world = World::from_data(world_data, Some(path.clone()));
         let mut name = {
             let lock = world.data.lock().await;
             lock.name.clone()
@@ -294,7 +299,7 @@ async fn load_worlds(path: &Path) -> Result<HashMap<String, World>, Box<dyn Erro
         if let Some(occupied) = world_map.get(&name) {
             warn!("Two worlds have the same name of {name}:");
             warn!("- {}", path.display());
-            warn!("- {}", occupied.filepath.as_ref().as_ref().expect("worlds loaded from files always have a name").display());
+            warn!("- {}", occupied.filepath.as_ref().get().expect("worlds loaded from files always have a name").display());
             warn!("Renaming {}...", path.display());
             let mut counter = 0;
             let mut new_name = name.clone() + " (1)";

@@ -4,19 +4,18 @@
 use std::{fs, io, path::PathBuf, sync::{Arc, atomic::Ordering}};
 use std::fs::File;
 use std::io::{Cursor, Read, Write};
+use std::sync::OnceLock;
 use arrayvec::ArrayVec;
 use flate2::Compression;
 use flate2::read::GzEncoder;
 use mint::Vector3;
-use crate::{
-    packets::Location,
-    player::WeakPlayer,
-};
+use crate::{packets::Location, player::WeakPlayer, WORLD_PATH};
 use identity_hash::IntMap;
 use itertools::Itertools;
 use tokio::sync::Mutex as TokioMutex;
 use parking_lot::Mutex;
 use tokio::sync::mpsc::Sender;
+use uuid::Uuid;
 use crate::packets::Outgoing;
 
 
@@ -24,7 +23,7 @@ use crate::packets::Outgoing;
 #[derive(Debug, Clone)]
 pub struct World {
     /// The world's filepath.
-    pub filepath: Arc<Option<PathBuf>>,
+    pub filepath: Arc<OnceLock<PathBuf>>,
     /// A hashmap of player IDs to players.
     pub players: Arc<Mutex<IntMap<i8, WeakPlayer>>>,
     /// A list of available player IDs.
@@ -311,7 +310,6 @@ impl World {
 
     /// Removes a player from the world.
     /// Returns the player if they exist.
-    #[inline]
     pub fn remove_player(&self, id: i8) -> Option<WeakPlayer> {
         {
             let mut lock = self.available_ids.lock();
@@ -377,22 +375,32 @@ impl World {
     }
 
     /// Constructs a world from a [`WorldData`] and [`PathBuf`].
-    pub fn from_data(data: WorldData, path: PathBuf) -> Self {
+    #[allow(clippy::cast_possible_wrap)]
+    pub fn from_data(data: WorldData, path: Option<PathBuf>) -> Self {
+        let path_lock = OnceLock::new();
+        if let Some(path) = path {
+            path_lock.get_or_init(|| path);
+        }
         Self {
-            filepath: Arc::new(Some(path)),
+            filepath: Arc::new(path_lock),
             players: Arc::default(),
             available_ids: Arc::new(Mutex::new(
-                (u8::MIN ..= u8::MAX - 1).map(|v| v as i8).collect()
+                (u8::MIN..u8::MAX).map(|v| v as i8).collect()
             )),
             data: Arc::new(TokioMutex::new(data)),
         }
     }
 
     pub async fn save(self) -> io::Result<()> {
-        let Some(path) = self.filepath.as_ref() else { return Ok(()) };
+        let path = (*self.filepath).get_or_init(|| {
+            let Some(path) = WORLD_PATH.get() else { unreachable!("we wouldn't be here if worlds weren't loaded")};
+            path.join(format!("{}", Uuid::new_v4())).with_extension("hbit")
+        });
         let data = self.data.lock().await;
-        let backup_path = path.with_extension("hbit~");
-        fs::rename(path, backup_path)?;
+        if path.exists() {
+            let backup_path = path.with_extension("hbit~");
+            fs::rename(path, backup_path)?;
+        }
         let file = File::create(path)?;
         data.store(file)?;
         Ok(())

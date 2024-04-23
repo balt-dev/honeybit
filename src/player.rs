@@ -33,7 +33,8 @@ use tokio::{
 };
 use uuid::Uuid;
 use parking_lot::Mutex;
-use crate::packets::SupportedExtensions;
+use crate::packets::{SupportedExtensions, x16};
+use crate::world::{LevelData, WorldData};
 
 #[derive(Debug)]
 pub struct Player {
@@ -663,19 +664,49 @@ impl WeakPlayer {
                         self.send_message(format!("- {world}")).await;
                     }
                 },
+                Some("spawnpoint") if operator => {
+                    let Some(world) = self.world.upgrade() else { return Ok(false) };
+                    let data = world.lock().data.clone();
+                    let Some(location) = self.location.upgrade().map(|v| (&*v).into())
+                        else { return Ok(false) };
+                    data.lock().await.spawn_point = location;
+                    self.send_message("&3[&b#&3] &fSet world spawn to current location").await;
+                },
+                Some("rename") if operator => {
+                    let Some(world_name) = arguments.remainder() else {
+                        return Err("No world name specified".into())
+                    };
+                    let Some(world) = self.world.upgrade() else { return Ok(false) };
+                    let world_lock = world.lock().clone();
+                    let mut data = world_lock.data.lock().await;
+                    let old_name = data.name.clone();
+                    server.worlds.lock().await.remove(&old_name);
+                    data.name = world_name.to_string();
+                    self.send_message(format!("&2[&b#&2] &fRenamed world to \"{world_name}\".")).await;
+                }
                 Some("save") if operator => {
                     let Some(world) = self.world.upgrade() else { return Ok(false) };
                     let data = world.lock().data.clone();
                     let name = data.lock().await.name.clone();
                     server.send_message(format!("&6[&e@&6] &fSaving world \"{name}\"...")).await;
                     let world = world.lock().clone();
-                    if let Err(err) = world.save().await {
+                    let new_file = world.filepath.get().is_some();
+                    if let Err(err) = world.clone().save().await {
                         server.send_message("&4[&c!&4] Failed to save! See logs for details.").await;
                         warn!("Failed to save world \"{name}\": {err}");
                         return Ok(false);
                     };
                     info!("Saved world \"{name}\"");
                     server.send_message("&6[&e@&6] &fWorld saved!".to_string()).await;
+                    if new_file {
+                        self.send_message(format!(
+                            "&2[&b#&2] &fSaved to \"{}\".",
+                            world.filepath.get()
+                                .and_then(|f| f.file_name())
+                                .expect(".save() should initialize the filepath")
+                                .to_string_lossy()
+                        )).await;
+                    }
                 },
                 Some("create") if operator => {
                     let Some(length) = arguments.next() else { return Err("No length specified".into()) };
@@ -694,9 +725,32 @@ impl WeakPlayer {
                     let height: u16 = height.parse().map_err(|err| format!("Invalid height: {err}"))?;
                     let dimensions = Vector3 { x: length, z: width, y: height };
 
-                    let lock = server.generators.lock();
-                    let Some(generator) = lock.get(generator) else { return Err("Invalid generator {generator}".into())};
-
+                    let world;
+                    {
+                        let lock = server.generators.lock();
+                        let Some(generator) = lock.get(generator).map(|v| &**v) else { return Err(format!("Invalid generator {generator}"))};
+                        let data = generator.generate(dimensions, seed)
+                            .map_err(|err| format!("Generation error: {err}"))?;
+                        world = World::from_data(WorldData {
+                            level_data: LevelData {
+                                raw_data: data,
+                                dimensions
+                            },
+                            spawn_point: Location {
+                                position: Vector3 {
+                                    x: x16::from_num(length.min(2047)) / 2,
+                                    y: x16::from_num(height.min(2047)),
+                                    z: x16::from_num(width.min(2047)) / 2
+                                },
+                                yaw: 0,
+                                pitch: 0
+                            },
+                            name: format!("<tmp-{}>", Uuid::new_v4()),
+                        }, None);
+                    }
+                    self.send_to(world).await;
+                    self.send_message("&3[&b#&3] &fWorld generated!").await;
+                    self.send_message("&3[&b#&3] &fBe sure to &b/world rename&f and &b/world save&f.").await;
                 }
                 Some("generators") if operator => {
                     self.send_message("&6[&eWorld Generators&6]").await;
@@ -708,15 +762,8 @@ impl WeakPlayer {
                         self.send_message(format!("- {gen}")).await;
                     }
                 }
-                Some(cmd) => return Err(format!("Invalid subcommand {cmd}")),
-                None => {
-                    self.send_message("/world").await;
-                    self.send_message("- join &b<name>").await;
-                    self.send_message("- list").await;
-                    if operator {
-                        self.send_message("&e- save").await;
-                    }
-                }
+                Some(cmd) => return Err(format!("Invalid subcommand \"{cmd}\". See /help")),
+                None => return Err("No subcommand. See /help".to_string()),
             },
             "stop" if operator => {
                 server.stop().await;
@@ -740,15 +787,18 @@ impl WeakPlayer {
                 player.send_message(format!("&0[&{own_name} -> {name}&0] &7{message}")).await;
             }
             "locate" => {
-                let Some(name) = arguments.next() else {
-                    return Err("No username specified".into())
+                if let Some(name) = arguments.next() {
+                    let players = server.connected_players.lock().await;
+                    let Some(world) = players.get(name).cloned().and_then(|player| player.world.upgrade()) else {
+                        return Err(format!("User {name} is not online"))
+                    };
+                    let world = world.lock().clone();
+                    self.send_message(format!("{name} is in \"{}\"", world.data.lock().await.name)).await;
+                } else {
+                    let Some(world) = self.world.upgrade() else { return Ok(false) };
+                    let world = world.lock().clone();
+                    self.send_message(format!("You are in \"{}\"", world.data.lock().await.name)).await;
                 };
-                let players = server.connected_players.lock().await;
-                let Some(world) = players.get(name).cloned().and_then(|player| player.world.upgrade()) else {
-                    return Err(format!("User {name} is not online"))
-                };
-                let world = world.lock().clone();
-                self.send_message(format!("{name} is in \"{}\"", world.data.lock().await.name)).await;
             }
             "players" => {
                 let players = server.connected_players.lock().await;
@@ -840,12 +890,13 @@ impl WeakPlayer {
                 self.send_message("  - /world join <name>").await;
                 self.send_message("  - /world list").await;
                 if operator {
-                    self.send_message("&b  - /world save [name]").await;
+                    self.send_message("&b  - /world save").await;
                     self.send_message("&b  - /world generators").await;
-                    self.send_message("&b  - /world create <length> <width> <height> <generator> [seed]").await
+                    self.send_message("&b  - /world spawnpoint").await;
+                    self.send_message("&b  - /world create <length> <width> <height> <generator> [seed]").await;
                 }
                 self.send_message("- /w <user> <message>").await;
-                self.send_message("- /locate <user>").await;
+                self.send_message("- /locate [user=self]").await;
                 self.send_message("- /players").await;
                 if operator {
                     self.send_message("&b- /op <name>").await;
