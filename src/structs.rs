@@ -52,6 +52,8 @@ pub struct Config {
     pub ping_spacing: Duration,
     /// The default world to connect to.
     pub default_world: String,
+    /// The IP to connect to.
+    pub ip: IpAddr,
     /// A mapping of banned IPs to their ban reasons.
     pub banned_ips: HashMap<IpAddr, String>,
     /// A mapping of banned usernames to their ban reasons.
@@ -109,6 +111,7 @@ impl Default for Config {
                 ("Bob".into(), "<ban reason>".into()),
                 ("Charlie".into(), "<ban reason>".into())
             ]),
+            ip: IpAddr::from([127, 0, 0, 1]),
             kept_salts: 0,
             name: "<Unnamed Server>".to_string(),
             heartbeat_url: String::new(),
@@ -124,7 +127,7 @@ impl Default for Config {
     }
 }
 
-static COMMENT_MAP: [(&str, &str); 16] = [
+static COMMENT_MAP: [(&str, &str); 17] = [
     ("packet_timeout", "How long the server should wait before disconnecting a player, in seconds."),
     ("ping_spacing", "How often the server sends pings to clients, in seconds."),
     ("default_world", "The world that players first connect to when joining."),
@@ -134,6 +137,7 @@ static COMMENT_MAP: [(&str, &str); 16] = [
     ("heartbeat_url", "The URL to ping for heartbeat pings.\n\nIf this is left blank, then no heartbeat pings will be sent.\nIf this is left blank AND kept_salts is above 0,\nthe program will exit with an error,\nas it will be impossible for users to join."),
     ("heartbeat_spacing", "How often heartbeat pings will be sent, in seconds."),
     ("heartbeat_timeout", "How long the server will wait to hear back from the heartbeat server, in seconds."),
+    ("ip", "The IP to listen for connections on."),
     ("port", "The port to host the server on."),
     ("max_players", "The maximum amount of players on the server."),
     ("public", "Whether the server will show as public on the heartbeat URLs corresponding server list."),

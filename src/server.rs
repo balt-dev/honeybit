@@ -182,7 +182,7 @@ impl IdleServer {
             mpsc::channel::<ServerCommand>(100);
 
         let listener = TcpListener::bind((
-            Ipv4Addr::new(127, 0, 0, 1),
+            self.config.ip,
             self.config.port
         )).await?;
         info!("Connected to port {}", self.config.port);
